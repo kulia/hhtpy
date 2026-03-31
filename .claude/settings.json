@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:scispace.com)",
+      "WebFetch(domain:arxiv.org)"
+    ]
+  }
+}

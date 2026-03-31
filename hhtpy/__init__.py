@@ -15,3 +15,5 @@ from .sift_stopping_criteria import (
     get_stopping_criterion_cauchy,
     get_stopping_criterion_rilling,
 )
+from .ensemble_emd import eemd, ceemdan
+from .multivariate_emd import memd

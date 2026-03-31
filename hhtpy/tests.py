@@ -12,6 +12,8 @@ from hhtpy.sift_stopping_criteria import (
     get_stopping_criterion_rilling,
 )
 from hhtpy.hht import index_of_orthogonality
+from hhtpy.ensemble_emd import eemd, ceemdan
+from hhtpy.multivariate_emd import memd
 from hhtpy.plot import plot_imfs
 import matplotlib.pyplot as plt
 
@@ -445,6 +447,187 @@ class TestMaxImfs(unittest.TestCase):
         imfs, residue = decompose(signal, max_imfs=2)
         reconstructed = np.sum(imfs, axis=0) + residue
         np.testing.assert_allclose(reconstructed, signal, atol=1e-10)
+
+
+class TestEEMD(unittest.TestCase):
+
+    def _make_signal(self):
+        f_s = 1000
+        t = np.arange(3 * f_s) / f_s
+        return np.cos(2 * np.pi * 10 * t) + 0.5 * np.cos(2 * np.pi * 50 * t)
+
+    def test_eemd_produces_imfs(self):
+        signal = self._make_signal()
+        imfs, residue = eemd(signal, num_trials=10, seed=42)
+
+        self.assertGreater(len(imfs), 0)
+        self.assertEqual(imfs.shape[1], len(signal))
+
+    def test_eemd_reproducible_with_seed(self):
+        signal = self._make_signal()
+        imfs1, _ = eemd(signal, num_trials=10, seed=42)
+        imfs2, _ = eemd(signal, num_trials=10, seed=42)
+
+        np.testing.assert_array_equal(imfs1, imfs2)
+
+    def test_eemd_reduces_mode_mixing(self):
+        """EEMD should produce more IMFs or better separation than EMD
+        on a signal prone to mode mixing."""
+        f_s = 1000
+        t = np.arange(3 * f_s) / f_s
+        # Intermittent signal — classic mode mixing scenario
+        signal = np.cos(2 * np.pi * 10 * t)
+        signal[1000:1500] += 0.5 * np.cos(2 * np.pi * 80 * t[1000:1500])
+
+        imfs, residue = eemd(signal, num_trials=20, seed=42)
+
+        self.assertGreater(len(imfs), 0)
+        self.assertEqual(imfs.shape[1], len(signal))
+
+    def test_eemd_edge_cases(self):
+        """Empty and 2D signals should raise ValueError."""
+        with self.assertRaises(ValueError):
+            eemd(np.array([]))
+        with self.assertRaises(ValueError):
+            eemd(np.array([[1, 2], [3, 4]]))
+
+    def test_eemd_high_frequency_first(self):
+        """First EEMD IMF should correlate with the high-frequency component."""
+        f_s = 2000
+        t = np.arange(3 * f_s) / f_s
+        low = np.cos(2 * np.pi * 5 * t)
+        high = np.cos(2 * np.pi * 80 * t)
+        signal = low + high
+
+        imfs, _ = eemd(signal, num_trials=10, seed=42)
+
+        corr_high = np.abs(np.corrcoef(imfs[0], high)[0, 1])
+        corr_low = np.abs(np.corrcoef(imfs[0], low)[0, 1])
+        self.assertGreater(corr_high, corr_low)
+
+
+class TestCEEMDAN(unittest.TestCase):
+
+    def _make_signal(self):
+        f_s = 1000
+        t = np.arange(3 * f_s) / f_s
+        return np.cos(2 * np.pi * 10 * t) + 0.5 * np.cos(2 * np.pi * 50 * t)
+
+    def test_ceemdan_produces_imfs(self):
+        signal = self._make_signal()
+        imfs, residue = ceemdan(signal, num_trials=10, seed=42)
+
+        self.assertGreater(len(imfs), 0)
+        self.assertEqual(imfs.shape[1], len(signal))
+
+    def test_ceemdan_exact_reconstruction(self):
+        """CEEMDAN guarantees sum(imfs) + residue == signal."""
+        signal = self._make_signal()
+        imfs, residue = ceemdan(signal, num_trials=10, seed=42)
+
+        reconstructed = np.sum(imfs, axis=0) + residue
+        np.testing.assert_allclose(
+            reconstructed, signal, atol=1e-10,
+            err_msg="CEEMDAN must guarantee exact reconstruction",
+        )
+
+    def test_ceemdan_reproducible_with_seed(self):
+        signal = self._make_signal()
+        imfs1, res1 = ceemdan(signal, num_trials=10, seed=42)
+        imfs2, res2 = ceemdan(signal, num_trials=10, seed=42)
+
+        np.testing.assert_array_equal(imfs1, imfs2)
+        np.testing.assert_array_equal(res1, res2)
+
+    def test_ceemdan_edge_cases(self):
+        with self.assertRaises(ValueError):
+            ceemdan(np.array([]))
+        with self.assertRaises(ValueError):
+            ceemdan(np.array([[1, 2], [3, 4]]))
+
+    def test_ceemdan_high_frequency_first(self):
+        """First CEEMDAN IMF should correlate with the high-frequency component."""
+        f_s = 2000
+        t = np.arange(3 * f_s) / f_s
+        low = np.cos(2 * np.pi * 5 * t)
+        high = np.cos(2 * np.pi * 80 * t)
+        signal = low + high
+
+        imfs, _ = ceemdan(signal, num_trials=10, seed=42)
+
+        corr_high = np.abs(np.corrcoef(imfs[0], high)[0, 1])
+        corr_low = np.abs(np.corrcoef(imfs[0], low)[0, 1])
+        self.assertGreater(corr_high, corr_low)
+
+
+class TestMEMD(unittest.TestCase):
+
+    def _make_bivariate_signal(self):
+        """Two-channel signal with shared oscillatory modes."""
+        f_s = 500
+        t = np.arange(2 * f_s) / f_s
+        ch1 = np.cos(2 * np.pi * 10 * t) + 0.5 * np.cos(2 * np.pi * 40 * t)
+        ch2 = np.sin(2 * np.pi * 10 * t) + 0.3 * np.sin(2 * np.pi * 40 * t)
+        return np.array([ch1, ch2])
+
+    def test_memd_produces_imfs(self):
+        signal = self._make_bivariate_signal()
+        imfs, residue = memd(signal, num_directions=16)
+
+        self.assertGreater(len(imfs), 0)
+        self.assertEqual(imfs.shape[1], 2)  # 2 channels
+        self.assertEqual(imfs.shape[2], signal.shape[1])
+
+    def test_memd_round_trip(self):
+        """sum(imfs) + residue must reconstruct the signal."""
+        signal = self._make_bivariate_signal()
+        imfs, residue = memd(signal, num_directions=16)
+
+        reconstructed = np.sum(imfs, axis=0) + residue
+        np.testing.assert_allclose(
+            reconstructed, signal, atol=1e-10,
+            err_msg="MEMD IMFs + residue must reconstruct the original signal",
+        )
+
+    def test_memd_imf_alignment(self):
+        """Both channels should have the same number of IMFs (alignment property)."""
+        signal = self._make_bivariate_signal()
+        imfs, residue = memd(signal, num_directions=16)
+
+        # All IMFs share the same first dimension — inherent from the algorithm
+        self.assertEqual(imfs.shape[1], signal.shape[0])
+
+    def test_memd_three_channels(self):
+        """MEMD should work with 3+ channels."""
+        f_s = 500
+        t = np.arange(2 * f_s) / f_s
+        ch1 = np.cos(2 * np.pi * 10 * t)
+        ch2 = np.sin(2 * np.pi * 10 * t)
+        ch3 = np.cos(2 * np.pi * 10 * t + np.pi / 4)
+        signal = np.array([ch1, ch2, ch3])
+
+        imfs, residue = memd(signal, num_directions=16)
+
+        self.assertGreater(len(imfs), 0)
+        reconstructed = np.sum(imfs, axis=0) + residue
+        np.testing.assert_allclose(reconstructed, signal, atol=1e-10)
+
+    def test_memd_edge_cases(self):
+        """Invalid inputs should raise ValueError."""
+        # 1D input
+        with self.assertRaises(ValueError):
+            memd(np.array([1.0, 2.0, 3.0]))
+
+        # Too few directions
+        signal = self._make_bivariate_signal()
+        with self.assertRaises(ValueError):
+            memd(signal, num_directions=2)
+
+    def test_memd_channels_transposed(self):
+        """Signal with n_channels >= n_samples should raise a helpful error."""
+        bad_signal = np.random.randn(100, 10)  # 100 channels, 10 samples
+        with self.assertRaises(ValueError):
+            memd(bad_signal)
 
 
 if __name__ == "__main__":

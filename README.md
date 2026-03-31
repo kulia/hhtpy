@@ -4,12 +4,6 @@ A Python implementation of the Hilbert-Huang Transform (HHT), including Empirica
 
 This library was written by **Lars Havstad** and **Geir Kulia**.
 
-## Installation
-
-```bash
-pip install hhtpy
-```
-
 ## Quick Start
 
 ```python
@@ -203,6 +197,77 @@ io = index_of_orthogonality(imfs)
 print(f"Index of orthogonality: {io:.4f}")  # Lower is better
 ```
 
+## Ensemble EMD (EEMD)
+
+Standard EMD can suffer from *mode mixing* — when oscillatory components of different scales end up in the same IMF. EEMD (Wu & Huang, 2009) mitigates this by adding white Gaussian noise over multiple trials and averaging the resulting IMFs. The noise populates the time-frequency space uniformly, guiding the sifting process to separate scales consistently.
+
+```python
+from hhtpy import eemd
+
+imfs, residue = eemd(
+    signal,
+    num_trials=100,        # Number of noise-perturbed decompositions
+    noise_amplitude=0.2,   # Noise std as fraction of signal std (20%)
+    seed=42,               # For reproducibility
+)
+```
+
+**Note:** EEMD does not guarantee exact reconstruction. The residual noise decreases as `noise_amplitude / sqrt(num_trials)` but never reaches zero. For exact reconstruction, use CEEMDAN.
+
+## CEEMDAN
+
+Complete Ensemble EMD with Adaptive Noise (Torres et al., 2011) improves on EEMD in two ways:
+
+1. **Exact reconstruction** — `sum(imfs) + residue == signal` is guaranteed by construction.
+2. **Adaptive noise** — noise is added at each decomposition stage (not just to the original signal), keeping the signal-to-noise ratio constant across all stages.
+
+At each stage *k*, the noise contribution is the *k*-th IMF of the original noise realization, scaled to the current residue's standard deviation.
+
+```python
+from hhtpy import ceemdan
+
+imfs, residue = ceemdan(
+    signal,
+    num_trials=100,        # Number of ensemble trials
+    noise_amplitude=0.2,   # Noise scale factor (fraction of residue std)
+    seed=42,               # For reproducibility
+)
+
+# Exact reconstruction is guaranteed:
+# np.sum(imfs, axis=0) + residue == signal
+```
+
+See `example_eemd.py` for a side-by-side comparison of EMD, EEMD, and CEEMDAN on a signal with intermittent high-frequency bursts.
+
+## Multivariate EMD (MEMD)
+
+Multivariate EMD (Rehman & Mandic, 2010) extends EMD to multi-channel signals. It computes envelopes by projecting the signal onto uniformly distributed direction vectors on the unit hypersphere (generated via the Hammersley quasi-random sequence), then averages the back-projected mean envelopes.
+
+The key advantage over applying standard EMD to each channel independently: MEMD **aligns** common oscillatory scales across all channels, ensuring shared modes appear at the same IMF index.
+
+```python
+from hhtpy import memd
+
+# signal shape: (n_channels, n_samples)
+signal = np.array([ch1, ch2, ch3])
+
+imfs, residue = memd(
+    signal,
+    num_directions=64,     # Direction vectors on the unit hypersphere
+    max_imfs=None,         # None = automatic
+    max_sifts=100,         # Safety limit per IMF
+    stop_threshold=0.075,  # Normalized mean envelope threshold
+)
+
+# imfs shape: (n_imfs, n_channels, n_samples)
+# Exact reconstruction: np.sum(imfs, axis=0) + residue == signal
+```
+
+- **num_directions** must be >= 2 × n_channels. Higher values give better envelope estimates at the cost of computation. Default is 64.
+- The input shape is `(n_channels, n_samples)` — channels first.
+
+See `example_memd.py` for a complete example with a two-channel signal.
+
 ## Mode Mixing / Separation Analysis
 
 EMD can suffer from *mode mixing* — when two frequency components end up in the same IMF instead of being separated. Whether the EMD resolves two tones or treats them as a single modulated component depends on their amplitude and frequency ratios, as analyzed by [Rilling & Flandrin (2008)](https://doi.org/10.1109/TSP.2007.906771).
@@ -223,6 +288,9 @@ See `emd_separation_analysis.py` to reproduce this analysis.
 | `hilbert_huang_transform(signal, fs, ...)` | Full HHT: decompose + instantaneous frequency/amplitude |
 | `marginal_hilbert_spectrum(imfs)` | Frequency-domain amplitude integration |
 | `index_of_orthogonality(imfs)` | Decomposition quality metric |
+| `eemd(signal, ...)` | Ensemble EMD — noise-assisted decomposition |
+| `ceemdan(signal, ...)` | Complete EEMD with Adaptive Noise |
+| `memd(signal, ...)` | Multivariate EMD for multi-channel signals |
 
 ### Stopping Criteria
 
