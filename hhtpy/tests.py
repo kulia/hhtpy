@@ -1,6 +1,7 @@
 import unittest
 import numpy as np
 from hhtpy.emd import decompose
+from hhtpy.hht import hilbert_huang_transform, marginal_hilbert_spectrum
 from hhtpy.plot import plot_imfs
 import matplotlib.pyplot as plt
 
@@ -8,7 +9,6 @@ import matplotlib.pyplot as plt
 class TestEMDAndPlotting(unittest.TestCase):
 
     def setUp(self):
-        # Create the sample data used in the original code
         T = 5  # sec
         f_s = 15000  # Hz
         n = np.arange(T * f_s)
@@ -19,7 +19,6 @@ class TestEMDAndPlotting(unittest.TestCase):
         )
 
     def test_emd_decomposition(self):
-
         imfs, residue = decompose(self.y)
 
         self.assertIsNotNone(imfs)
@@ -43,6 +42,221 @@ class TestEMDAndPlotting(unittest.TestCase):
         self.assertIsInstance(
             axs, np.ndarray, "The output should be an array of matplotlib Axes"
         )
+
+
+class TestEMDRoundTrip(unittest.TestCase):
+    """sum(imfs) + residue must reconstruct the original signal."""
+
+    def test_round_trip_simple_signal(self):
+        f_s = 1000
+        t = np.arange(5 * f_s) / f_s
+        signal = np.cos(2 * np.pi * 10 * t) + 0.5 * np.cos(2 * np.pi * 50 * t)
+
+        imfs, residue = decompose(signal)
+        reconstructed = np.sum(imfs, axis=0) + residue
+
+        np.testing.assert_allclose(
+            reconstructed, signal, atol=1e-10,
+            err_msg="IMFs + residue must reconstruct the original signal",
+        )
+
+    def test_round_trip_with_trend(self):
+        f_s = 1000
+        t = np.arange(3 * f_s) / f_s
+        signal = np.cos(2 * np.pi * 20 * t) + 2 * t + 5
+
+        imfs, residue = decompose(signal)
+        reconstructed = np.sum(imfs, axis=0) + residue
+
+        np.testing.assert_allclose(
+            reconstructed, signal, atol=1e-10,
+            err_msg="IMFs + residue must reconstruct signal with trend",
+        )
+
+    def test_round_trip_hht(self):
+        """Round-trip also holds through the full HHT pipeline."""
+        f_s = 1000
+        t = np.arange(2 * f_s) / f_s
+        signal = 3 * np.cos(2 * np.pi * 15 * t)
+
+        imf_objects, residue = hilbert_huang_transform(signal, f_s)
+        imf_signals = np.array([imf.signal for imf in imf_objects])
+        reconstructed = np.sum(imf_signals, axis=0) + residue
+
+        np.testing.assert_allclose(
+            reconstructed, signal, atol=1e-10,
+            err_msg="HHT IMFs + residue must reconstruct the original signal",
+        )
+
+
+class TestEMDEdgeCases(unittest.TestCase):
+
+    def test_empty_signal_raises(self):
+        with self.assertRaises(ValueError):
+            decompose(np.array([]))
+
+    def test_2d_signal_raises(self):
+        with self.assertRaises(ValueError):
+            decompose(np.array([[1, 2], [3, 4]]))
+
+    def test_monotonic_signal(self):
+        """A monotonic signal has no oscillatory components — should produce 0 IMFs."""
+        signal = np.linspace(0, 10, 1000)
+        imfs, residue = decompose(signal)
+
+        self.assertEqual(len(imfs), 0, "Monotonic signal should produce 0 IMFs")
+        np.testing.assert_allclose(
+            residue, signal, atol=1e-10,
+            err_msg="Residue should equal the monotonic signal",
+        )
+
+    def test_constant_signal(self):
+        """A constant signal has zero variance — decompose should raise ValueError."""
+        signal = np.ones(500) * 42.0
+        with self.assertRaises(ValueError):
+            decompose(signal)
+
+    def test_short_signal(self):
+        """Very short signals should still not crash."""
+        signal = np.array([1.0, -1.0, 1.0, -1.0, 1.0])
+        imfs, residue = decompose(signal)
+        reconstructed = np.sum(imfs, axis=0) + residue if len(imfs) > 0 else residue
+        np.testing.assert_allclose(reconstructed, signal, atol=1e-10)
+
+
+class TestEMDCorrectness(unittest.TestCase):
+
+    def test_pure_cosine_produces_one_dominant_imf(self):
+        """A pure cosine should decompose into ~1 IMF carrying most energy."""
+        f_s = 1000
+        t = np.arange(5 * f_s) / f_s
+        freq = 10  # Hz
+        signal = np.cos(2 * np.pi * freq * t)
+
+        imfs, residue = decompose(signal)
+
+        self.assertGreaterEqual(len(imfs), 1)
+
+        # First IMF should carry > 95% of signal energy
+        signal_energy = np.sum(signal**2)
+        first_imf_energy = np.sum(imfs[0] ** 2)
+        energy_ratio = first_imf_energy / signal_energy
+
+        self.assertGreater(
+            energy_ratio, 0.95,
+            f"First IMF should capture >95% of pure cosine energy, got {energy_ratio:.2%}",
+        )
+
+    def test_two_tones_produce_two_imfs(self):
+        """Two well-separated tones should produce at least 2 IMFs."""
+        f_s = 2000
+        t = np.arange(5 * f_s) / f_s
+        signal = np.cos(2 * np.pi * 5 * t) + np.cos(2 * np.pi * 80 * t)
+
+        imfs, residue = decompose(signal)
+
+        self.assertGreaterEqual(
+            len(imfs), 2,
+            "Two well-separated tones should produce at least 2 IMFs",
+        )
+
+    def test_high_frequency_extracted_first(self):
+        """EMD extracts highest frequency component first."""
+        f_s = 2000
+        t = np.arange(5 * f_s) / f_s
+        low_freq = np.cos(2 * np.pi * 5 * t)
+        high_freq = np.cos(2 * np.pi * 80 * t)
+        signal = low_freq + high_freq
+
+        imfs, residue = decompose(signal)
+
+        # First IMF should correlate more with the high-frequency component
+        corr_high = np.abs(np.corrcoef(imfs[0], high_freq)[0, 1])
+        corr_low = np.abs(np.corrcoef(imfs[0], low_freq)[0, 1])
+
+        self.assertGreater(
+            corr_high, corr_low,
+            "First IMF should correlate more with the high-frequency component",
+        )
+
+
+class TestHHTFrequencyEstimation(unittest.TestCase):
+
+    def test_cosine_instantaneous_frequency(self):
+        """HHT on a pure cosine should yield instantaneous frequency close to true frequency."""
+        f_s = 5000
+        true_freq = 25  # Hz
+        t = np.arange(3 * f_s) / f_s
+        signal = np.cos(2 * np.pi * true_freq * t)
+
+        imf_objects, residue = hilbert_huang_transform(signal, f_s)
+
+        # The first IMF should have the dominant content
+        freq = imf_objects[0].instantaneous_frequency
+        # Use median of non-NaN interior values (edges are cropped)
+        valid = freq[~np.isnan(freq)]
+        median_freq = np.median(valid)
+
+        self.assertAlmostEqual(
+            median_freq, true_freq, delta=2.0,
+            msg=f"Median instantaneous frequency should be ~{true_freq} Hz, got {median_freq:.1f} Hz",
+        )
+
+    def test_marginal_spectrum_peak(self):
+        """Marginal Hilbert spectrum should peak near the true frequency."""
+        f_s = 5000
+        true_freq = 30  # Hz
+        t = np.arange(3 * f_s) / f_s
+        signal = 2 * np.cos(2 * np.pi * true_freq * t)
+
+        imf_objects, residue = hilbert_huang_transform(signal, f_s)
+        frequencies, amplitudes = marginal_hilbert_spectrum(imf_objects)
+
+        peak_freq = frequencies[np.argmax(amplitudes)]
+
+        self.assertAlmostEqual(
+            peak_freq, true_freq, delta=3.0,
+            msg=f"Marginal spectrum peak should be ~{true_freq} Hz, got {peak_freq:.1f} Hz",
+        )
+
+
+class TestPlotSubplots(unittest.TestCase):
+    """Verify plot_imfs creates the correct number of subplots."""
+
+    def setUp(self):
+        f_s = 1000
+        t = np.arange(2 * f_s) / f_s
+        signal = np.cos(2 * np.pi * 10 * t) + 0.5 * np.cos(2 * np.pi * 50 * t)
+        self.imfs, self.residue = decompose(signal)
+        self.signal = signal
+        plt.close("all")
+
+    def test_imfs_only(self):
+        fig, axs = plot_imfs(self.imfs)
+        self.assertEqual(len(axs), len(self.imfs))
+        plt.close(fig)
+
+    def test_imfs_with_signal(self):
+        fig, axs = plot_imfs(self.imfs, signal=self.signal)
+        self.assertEqual(len(axs), len(self.imfs) + 1)
+        plt.close(fig)
+
+    def test_imfs_with_signal_and_residue(self):
+        fig, axs = plot_imfs(self.imfs, signal=self.signal, residue=self.residue)
+        self.assertEqual(len(axs), len(self.imfs) + 2)
+        plt.close(fig)
+
+    def test_imfs_with_residue_only(self):
+        fig, axs = plot_imfs(self.imfs, residue=self.residue)
+        self.assertEqual(len(axs), len(self.imfs) + 1)
+        plt.close(fig)
+
+    def test_max_number_of_imfs(self):
+        fig, axs = plot_imfs(
+            self.imfs, signal=self.signal, residue=self.residue, max_number_of_imfs=1,
+        )
+        self.assertEqual(len(axs), 1 + 1 + 1)  # signal + 1 IMF + residue
+        plt.close(fig)
 
 
 if __name__ == "__main__":

@@ -32,6 +32,9 @@ def decompose(
     signal_std = np.std(signal)
     signal_mean = np.mean(signal)
 
+    if signal_std == 0:
+        raise ValueError("Input signal is constant (zero variance). EMD requires a non-constant signal.")
+
     signal_normalized = (signal - signal_mean) / signal_std
 
     max_imfs = int(
