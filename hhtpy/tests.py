@@ -9,7 +9,9 @@ from hhtpy.hht import (
 from hhtpy.sift_stopping_criteria import (
     get_stopping_criterion_s_number,
     get_stopping_criterion_cauchy,
+    get_stopping_criterion_rilling,
 )
+from hhtpy.hht import index_of_orthogonality
 from hhtpy.plot import plot_imfs
 import matplotlib.pyplot as plt
 
@@ -348,6 +350,101 @@ class TestStoppingCriteria(unittest.TestCase):
         imfs, residue = decompose(signal, stopping_criterion=criterion)
 
         self.assertGreaterEqual(len(imfs), 2)
+
+
+class TestRillingCriterion(unittest.TestCase):
+
+    def _make_signal(self):
+        f_s = 1000
+        t = np.arange(3 * f_s) / f_s
+        return np.cos(2 * np.pi * 10 * t) + 0.5 * np.cos(2 * np.pi * 50 * t)
+
+    def test_rilling_produces_valid_decomposition(self):
+        signal = self._make_signal()
+        criterion = get_stopping_criterion_rilling()
+        imfs, residue = decompose(signal, stopping_criterion=criterion)
+
+        self.assertGreater(len(imfs), 0)
+        reconstructed = np.sum(imfs, axis=0) + residue
+        np.testing.assert_allclose(reconstructed, signal, atol=1e-10)
+
+    def test_rilling_resets_between_imfs(self):
+        signal = self._make_signal()
+        criterion = get_stopping_criterion_rilling()
+        imfs, residue = decompose(signal, stopping_criterion=criterion)
+
+        self.assertGreaterEqual(len(imfs), 2)
+
+    def test_rilling_custom_thresholds(self):
+        """Tighter thresholds should still produce a valid decomposition."""
+        signal = self._make_signal()
+        criterion = get_stopping_criterion_rilling(
+            threshold_1=0.01, threshold_2=0.1, alpha=0.01
+        )
+        imfs, residue = decompose(signal, stopping_criterion=criterion)
+
+        self.assertGreater(len(imfs), 0)
+        reconstructed = np.sum(imfs, axis=0) + residue
+        np.testing.assert_allclose(reconstructed, signal, atol=1e-10)
+
+
+class TestIndexOfOrthogonality(unittest.TestCase):
+
+    def test_orthogonal_imfs(self):
+        """Perfectly orthogonal signals should give IO close to 0."""
+        t = np.arange(1000) / 1000
+        imfs = np.array([
+            np.sin(2 * np.pi * 10 * t),
+            np.cos(2 * np.pi * 10 * t),
+        ])
+        io = index_of_orthogonality(imfs)
+        self.assertLess(io, 0.05)
+
+    def test_identical_imfs(self):
+        """Identical signals should give a high IO."""
+        t = np.arange(1000) / 1000
+        signal = np.sin(2 * np.pi * 5 * t)
+        imfs = np.array([signal, signal])
+        io = index_of_orthogonality(imfs)
+        self.assertAlmostEqual(io, 0.25, places=2)
+
+    def test_real_decomposition(self):
+        """IO from a real EMD should be small (good decomposition)."""
+        f_s = 1000
+        t = np.arange(3 * f_s) / f_s
+        signal = np.cos(2 * np.pi * 10 * t) + 0.5 * np.cos(2 * np.pi * 50 * t)
+        imfs, _ = decompose(signal)
+        io = index_of_orthogonality(imfs)
+        self.assertLess(io, 0.2)
+
+    def test_single_imf(self):
+        """Single IMF should return 0."""
+        io = index_of_orthogonality(np.array([[1.0, 2.0, 3.0]]))
+        self.assertEqual(io, 0.0)
+
+
+class TestMaxImfs(unittest.TestCase):
+
+    def test_max_imfs_limits_output(self):
+        f_s = 1000
+        t = np.arange(5 * f_s) / f_s
+        signal = np.cos(2 * np.pi * 5 * t) + np.cos(2 * np.pi * 50 * t)
+
+        imfs_full, _ = decompose(signal)
+        imfs_limited, residue = decompose(signal, max_imfs=1)
+
+        self.assertEqual(len(imfs_limited), 1)
+        self.assertGreater(len(imfs_full), 1)
+
+    def test_max_imfs_round_trip(self):
+        """Even with limited IMFs, sum(imfs) + residue = signal."""
+        f_s = 1000
+        t = np.arange(3 * f_s) / f_s
+        signal = np.cos(2 * np.pi * 10 * t) + 0.5 * np.cos(2 * np.pi * 50 * t)
+
+        imfs, residue = decompose(signal, max_imfs=2)
+        reconstructed = np.sum(imfs, axis=0) + residue
+        np.testing.assert_allclose(reconstructed, signal, atol=1e-10)
 
 
 if __name__ == "__main__":

@@ -312,3 +312,40 @@ def marginal_hilbert_spectrum(
     amplitudes = amplitudes / len(imfs[0].signal)
 
     return frequencies, amplitudes
+
+
+def index_of_orthogonality(imfs: np.ndarray) -> float:
+    """
+    Compute the index of orthogonality for a set of IMFs.
+
+    Measures how orthogonal the extracted IMFs are to each other. A value
+    close to zero indicates a good decomposition where IMFs capture
+    independent oscillatory modes with minimal leakage between them.
+
+    The index is defined as the sum of all pairwise cross-energies,
+    normalized by the total signal energy:
+
+    .. math::
+        IO = \\frac{\\sum_{i \\neq j} |\\langle c_i, c_j \\rangle|}
+             {2 \\, \\sum_t x(t)^2}
+
+    Args:
+        imfs: Array of IMF signals, shape ``(n_imfs, n_samples)``.
+            This is the first return value of ``decompose()``.
+
+    Returns:
+        Index of orthogonality (float). Lower is better; 0 means
+        perfectly orthogonal IMFs.
+    """
+    if len(imfs) < 2:
+        return 0.0
+
+    dot_products = np.dot(imfs, imfs.T)
+    mask = ~np.eye(len(imfs), dtype=bool)
+    cross_energy = np.abs(dot_products[mask]).sum()
+    total_energy = np.sum(imfs.sum(axis=0) ** 2)
+
+    if total_energy == 0:
+        return 0.0
+
+    return cross_energy / (2 * total_energy)
