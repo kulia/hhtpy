@@ -1,7 +1,15 @@
 import unittest
 import numpy as np
 from hhtpy.emd import decompose
-from hhtpy.hht import hilbert_huang_transform, marginal_hilbert_spectrum
+from hhtpy.hht import (
+    hilbert_huang_transform,
+    marginal_hilbert_spectrum,
+    calculate_instantaneous_frequency_hilbert,
+)
+from hhtpy.sift_stopping_criteria import (
+    get_stopping_criterion_s_number,
+    get_stopping_criterion_cauchy,
+)
 from hhtpy.plot import plot_imfs
 import matplotlib.pyplot as plt
 
@@ -257,6 +265,89 @@ class TestPlotSubplots(unittest.TestCase):
         )
         self.assertEqual(len(axs), 1 + 1 + 1)  # signal + 1 IMF + residue
         plt.close(fig)
+
+
+class TestHilbertMethod(unittest.TestCase):
+
+    def test_hilbert_frequency_pure_cosine(self):
+        """Hilbert method should recover the correct frequency of a pure cosine."""
+        f_s = 5000
+        true_freq = 40  # Hz
+        t = np.arange(3 * f_s) / f_s
+        signal = np.cos(2 * np.pi * true_freq * t)
+
+        imf_objects, residue = hilbert_huang_transform(
+            signal, f_s,
+            frequency_calculation_method=calculate_instantaneous_frequency_hilbert,
+        )
+
+        freq = imf_objects[0].instantaneous_frequency
+        # Interior values (skip edge effects)
+        interior = freq[len(freq) // 10 : -len(freq) // 10]
+        median_freq = np.median(interior)
+
+        self.assertAlmostEqual(
+            median_freq, true_freq, delta=2.0,
+            msg=f"Hilbert method median freq should be ~{true_freq} Hz, got {median_freq:.1f} Hz",
+        )
+
+    def test_hilbert_method_round_trip(self):
+        """HHT with Hilbert method should still reconstruct the signal."""
+        f_s = 1000
+        t = np.arange(2 * f_s) / f_s
+        signal = np.cos(2 * np.pi * 20 * t)
+
+        imf_objects, residue = hilbert_huang_transform(
+            signal, f_s,
+            frequency_calculation_method=calculate_instantaneous_frequency_hilbert,
+        )
+        imf_signals = np.array([imf.signal for imf in imf_objects])
+        reconstructed = np.sum(imf_signals, axis=0) + residue
+
+        np.testing.assert_allclose(reconstructed, signal, atol=1e-10)
+
+
+class TestStoppingCriteria(unittest.TestCase):
+
+    def _make_signal(self):
+        f_s = 1000
+        t = np.arange(3 * f_s) / f_s
+        return np.cos(2 * np.pi * 10 * t) + 0.5 * np.cos(2 * np.pi * 50 * t)
+
+    def test_s_number_produces_valid_decomposition(self):
+        signal = self._make_signal()
+        criterion = get_stopping_criterion_s_number(s_number=5)
+        imfs, residue = decompose(signal, stopping_criterion=criterion)
+
+        self.assertGreater(len(imfs), 0)
+        reconstructed = np.sum(imfs, axis=0) + residue
+        np.testing.assert_allclose(reconstructed, signal, atol=1e-10)
+
+    def test_cauchy_produces_valid_decomposition(self):
+        signal = self._make_signal()
+        criterion = get_stopping_criterion_cauchy(threshold=0.3)
+        imfs, residue = decompose(signal, stopping_criterion=criterion)
+
+        self.assertGreater(len(imfs), 0)
+        reconstructed = np.sum(imfs, axis=0) + residue
+        np.testing.assert_allclose(reconstructed, signal, atol=1e-10)
+
+    def test_s_number_resets_between_imfs(self):
+        """S-number state should reset for each IMF extraction (two-tone signal)."""
+        signal = self._make_signal()
+        criterion = get_stopping_criterion_s_number(s_number=3)
+        imfs, residue = decompose(signal, stopping_criterion=criterion)
+
+        # Should produce at least 2 IMFs for a two-tone signal
+        self.assertGreaterEqual(len(imfs), 2)
+
+    def test_cauchy_resets_between_imfs(self):
+        """Cauchy state should reset for each IMF extraction."""
+        signal = self._make_signal()
+        criterion = get_stopping_criterion_cauchy(threshold=0.2)
+        imfs, residue = decompose(signal, stopping_criterion=criterion)
+
+        self.assertGreaterEqual(len(imfs), 2)
 
 
 if __name__ == "__main__":

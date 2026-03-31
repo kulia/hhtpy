@@ -4,6 +4,7 @@ from typing import Callable
 import numpy as np
 from scipy.interpolate import CubicSpline
 from scipy.ndimage import median_filter
+from scipy.signal import hilbert
 from ._emd_utils import find_local_extrema, get_freq_lim
 from .emd import decompose
 
@@ -201,6 +202,29 @@ def _calculate_quadrature(monocomponent: np.ndarray) -> np.ndarray:
     return quadrature
 
 
+def calculate_instantaneous_frequency_hilbert(
+    imf: np.ndarray,
+    sampling_frequency: float,
+) -> np.ndarray:
+    """
+    Calculate the instantaneous frequency using the Hilbert transform.
+
+    Computes the analytic signal via scipy.signal.hilbert, then derives
+    instantaneous frequency from the unwrapped phase gradient.
+
+    Parameters:
+        imf (np.ndarray): Input intrinsic mode function (IMF).
+        sampling_frequency (float): Sampling frequency of the signal.
+
+    Returns:
+        np.ndarray: Instantaneous frequency array.
+    """
+    analytic_signal = hilbert(imf)
+    phase = np.unwrap(np.angle(analytic_signal))
+    frequency = sampling_frequency / (2 * np.pi) * np.abs(np.gradient(phase))
+    return frequency
+
+
 FrequencyCalculationMethod = Callable[[np.ndarray, float], np.ndarray]
 AmplitudeCalculationMethod = Callable[[np.ndarray], np.ndarray]
 
@@ -279,19 +303,11 @@ def marginal_hilbert_spectrum(
         freq = freq[freq_cond_index]
         amp = amp[freq_cond_index]
 
-        sort_args = np.argsort(freq)
-        freq = freq[sort_args]
-        amp = amp[sort_args]
-
-        freq_intervals_imf = np.floor(np.divide(freq, frequency_bin_size))
-        freq_intervals_imf = np.array(freq_intervals_imf, dtype="int")
-
-        freq_intervals = np.unique(freq_intervals_imf)
-        bins = np.array([freq_intervals])
-        sum_equal = lambda i: np.sum(amp[freq_intervals_imf == i])
-
-        amplitudes_imf = np.apply_along_axis(sum_equal, 0, bins)
-        amplitudes[freq_intervals] += amplitudes_imf
+        freq_intervals_imf = np.floor(freq / frequency_bin_size).astype(int)
+        freq_intervals_imf = np.clip(freq_intervals_imf, 0, len(frequencies) - 1)
+        amplitudes += np.bincount(
+            freq_intervals_imf, weights=amp, minlength=len(frequencies)
+        )
 
     amplitudes = amplitudes / len(imfs[0].signal)
 

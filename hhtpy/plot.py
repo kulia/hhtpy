@@ -50,8 +50,8 @@ def plot_hilbert_spectrum(
     )
 
     x_lim = [0, time_variable[-1]]
-    y_lim = get_freq_lim(imfs)
-    c_lim = get_clim(imfs, config.min_amplitude_lim)
+    y_lim = get_freq_lim(imfs[:num_imfs], percentile=1)
+    c_lim = get_clim(imfs[:num_imfs], config.min_amplitude_lim)
 
     for imf in imfs[:num_imfs]:
         frequency = imf.instantaneous_frequency.copy()
@@ -142,18 +142,21 @@ def plot_imfs(
             axs[idx].plot(signal)
         else:
             axs[idx].plot(x_axis, signal)
+        axs[idx].set_ylabel("Signal")
         idx += 1
     for i in range(num_imfs):
         if x_axis is None:
             axs[idx].plot(imfs[i])
         else:
             axs[idx].plot(x_axis, imfs[i])
+        axs[idx].set_ylabel(f"IMF {i + 1}")
         idx += 1
     if residue is not None:
         if x_axis is None:
             axs[idx].plot(residue)
         else:
             axs[idx].plot(x_axis, residue)
+        axs[idx].set_ylabel("Residue")
 
     return fig, axs
 
