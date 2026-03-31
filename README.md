@@ -49,6 +49,16 @@ fig, ax = plot_marginal_hilbert_spectrum(imfs)
 ```
 ![Plot marginal Hilbert spectrum](figs/marginal_hilbert_spectrum.png)
 
+### Mode Mixing / Separation Analysis
+
+EMD can suffer from *mode mixing* — when two frequency components end up in the same IMF instead of being separated. Whether the EMD resolves two tones or treats them as a single modulated component depends on their amplitude and frequency ratios, as analyzed by [Rilling & Flandrin (2008)](https://doi.org/10.1109/TSP.2007.906771).
+
+The plot below maps the separation boundary: dark regions indicate successful separation, light regions indicate mode mixing.
+
+![EMD separation performance](figs/figure3_rilling_flandrin.png)
+
+See `emd_separation_analysis.py` to reproduce this analysis.
+
 ### Custom Stopping Criterion
 
 You can provide a custom stopping criterion function to control the sifting process. The function should accept the
