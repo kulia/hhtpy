@@ -45,9 +45,11 @@ fig, axs = plot_imfs(imfs, y, residue, t, max_number_of_imfs=2)
 ```
 ![Plot of IMFs](figs/imfs.png)
 ```python
+from hhtpy.plot import HilbertSpectrumConfig
+
 fig, ax, clb = plot_hilbert_spectrum(
     imfs,
-    max_number_of_imfs=2,
+    config=HilbertSpectrumConfig(max_number_of_imfs=2),
 )
 ```
 ![Plot Hilbert Spectrum](figs/hilbert_spectrum.png)

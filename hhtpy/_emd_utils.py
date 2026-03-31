@@ -181,7 +181,7 @@ def is_monotonic(signal: ArrayLike) -> bool:
 
 
 def is_imf(
-    signal: ArrayLike, tolerance: float = 0.01, strick_mode: bool = False
+    signal: ArrayLike, tolerance: float = 0.01, strict_mode: bool = False
 ) -> bool:
     """
     Check if the input array satisfies the criteria for an Intrinsic Mode Function (IMF).
@@ -198,7 +198,7 @@ def is_imf(
         bool: True if the array is an IMF, False otherwise.
     """
     # Calculate the differences between consecutive elements
-    signal = np.asarray(signal)
+    signal = np.array(signal, dtype=float)
     n = len(signal)
 
     if n < 3:
@@ -219,7 +219,7 @@ def is_imf(
     if not (np.all(maxima_values > 0) and np.all(minima_values < 0)):
         return False
 
-    if strick_mode:
+    if strict_mode:
         # Interpolate upper and lower envelopes
         x = np.arange(n)
         from scipy.interpolate import CubicSpline

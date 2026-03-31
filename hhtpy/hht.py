@@ -70,7 +70,7 @@ def normalize_imf(
         ValueError: If the maximum value of the IMF remains greater than 1 after max_attempts.
     """
     for _ in np.arange(max_attempts):
-        if np.max(imf) <= 1:
+        if np.nanmax(np.abs(imf)) <= 1:
             break
 
         imf /= calculate_instantaneous_amplitude_spline(imf)
@@ -287,10 +287,10 @@ def marginal_hilbert_spectrum(
         freq_intervals_imf = np.array(freq_intervals_imf, dtype="int")
 
         freq_intervals = np.unique(freq_intervals_imf)
-        range = np.array([freq_intervals])
+        bins = np.array([freq_intervals])
         sum_equal = lambda i: np.sum(amp[freq_intervals_imf == i])
 
-        amplitudes_imf = np.apply_along_axis(sum_equal, 0, range)
+        amplitudes_imf = np.apply_along_axis(sum_equal, 0, bins)
         amplitudes[freq_intervals] += amplitudes_imf
 
     amplitudes = amplitudes / len(imfs[0].signal)

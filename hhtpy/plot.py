@@ -54,13 +54,13 @@ def plot_hilbert_spectrum(
     c_lim = get_clim(imfs, config.min_amplitude_lim)
 
     for imf in imfs[:num_imfs]:
-        frequency = imf.instantaneous_frequency
+        frequency = imf.instantaneous_frequency.copy()
 
         if frequency is None:
             continue
 
         if config.log_freq:
-            frequency[frequency <= 0] = None
+            frequency[frequency <= 0] = np.nan
             frequency = np.log10(frequency)
 
         points = np.array([time_variable, frequency]).T.reshape(-1, 1, 2)
@@ -132,16 +132,28 @@ def plot_imfs(
     number_of_subplots += 1 if signal is not None else 0
     number_of_subplots += 1 if residue is not None else 0
 
-    fig, axs = plt.subplots(num_imfs + 2, 1)
+    fig, axs = plt.subplots(number_of_subplots, 1)
+    if number_of_subplots == 1:
+        axs = np.array([axs])
+
+    idx = 0
     if signal is not None:
         if x_axis is None:
-            axs[0].plot(signal)
+            axs[idx].plot(signal)
         else:
-            axs[0].plot(x_axis, signal)
+            axs[idx].plot(x_axis, signal)
+        idx += 1
     for i in range(num_imfs):
-        axs[i + 1].plot(imfs[i]) if x_axis is None else axs[i + 1].plot(x_axis, imfs[i])
+        if x_axis is None:
+            axs[idx].plot(imfs[i])
+        else:
+            axs[idx].plot(x_axis, imfs[i])
+        idx += 1
     if residue is not None:
-        axs[-1].plot(residue) if x_axis is None else axs[-1].plot(x_axis, residue)
+        if x_axis is None:
+            axs[idx].plot(residue)
+        else:
+            axs[idx].plot(x_axis, residue)
 
     return fig, axs
 
