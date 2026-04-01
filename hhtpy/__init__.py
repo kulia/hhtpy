@@ -1,4 +1,5 @@
 from .emd import decompose
+from ._emd_utils import EnvelopeOptions
 from hhtpy import _emd_utils
 from .hht import (
     IntrinsicModeFunction,
@@ -17,3 +18,19 @@ from .sift_stopping_criteria import (
 )
 from .ensemble_emd import eemd, ceemdan
 from .multivariate_emd import memd
+from .masked_emd import (
+    masked_decompose,
+    adaptive_masked_decompose,
+    mask_init_huang,
+    mask_init_deering_kaiser,
+    mask_init_spectral,
+)
+from .significance import significance_test, SignificanceResult
+from .frequency_methods import (
+    calculate_instantaneous_frequency_zero_crossing,
+    calculate_instantaneous_frequency_generalized_zero_crossing,
+    calculate_instantaneous_frequency_teo,
+    calculate_instantaneous_frequency_hou,
+    calculate_instantaneous_frequency_wu,
+    despike_frequency,
+)

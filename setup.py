@@ -8,7 +8,7 @@ setup(
     description="HHTpy is a Python library for performing the Hilbert-Huang Transform (HHT)",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",  # Use markdown for the long description
-    url="https://github.com/SignalAnalysisLab/hhtpy/",  # Project's GitHub URL
+    url="https://github.com/kulia/hhtpy/",  # Project's GitHub URL
     packages=find_packages(),  # Automatically find packages
     install_requires=[  # List of dependencies
         "numpy",

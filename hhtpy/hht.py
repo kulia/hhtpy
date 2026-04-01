@@ -1,11 +1,11 @@
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Optional
 
 import numpy as np
 from scipy.interpolate import CubicSpline
 from scipy.ndimage import median_filter
 from scipy.signal import hilbert
-from ._emd_utils import find_local_extrema, get_freq_lim
+from ._emd_utils import find_local_extrema, get_freq_lim, EnvelopeOptions
 from .emd import decompose
 
 
@@ -28,18 +28,37 @@ def calculate_instantaneous_frequency_quadrature(
     median_filter_window_pct: float = 0.05,
 ) -> np.ndarray:
     """
-    Calculate the instantaneous frequency using the quadrature method.
+    Instantaneous frequency via the direct quadrature method.
 
-    Parameters:
-        imf (np.ndarray): Input intrinsic mode function (IMF).
-        sampling_frequency (float): Sampling frequency of the signal.
-        normalize (bool): Whether to normalize the IMF. Default is True.
+    Constructs the analytic signal as :math:`z(t) = x(t) + i\\,q(t)` where
+    the quadrature is computed directly from the normalized IMF:
+
+    .. math::
+        q(t) = \\operatorname{sign}\\!\\left(-\\frac{dx}{dt}\\right)
+               \\sqrt{1 - x^2(t)}
+
+    This avoids the Hilbert transform entirely, sidestepping the
+    Bedrosian theorem limitation that causes errors when the amplitude
+    and frequency spectra overlap (common in wideband IMFs).
+
+    The IMF is first normalized to [-1, 1] by iteratively dividing by
+    its spline-interpolated amplitude envelope, then the instantaneous
+    frequency is extracted from the phase gradient and smoothed with a
+    median filter.
+
+    Args:
+        imf: Input IMF signal.
+        sampling_frequency: Sampling frequency in Hz.
+        normalize: Whether to normalize the IMF first. Default True.
+        median_filter_window_pct: Median filter window as a fraction of
+            the sampling frequency. Default 0.05 (5%).
 
     Returns:
-        np.ndarray: Instantaneous frequency array.
+        Instantaneous frequency array (Hz), same length as ``imf``.
 
-    Raises:
-        ValueError: If normalization fails after a certain number of attempts.
+    Reference:
+        Huang, N.E. et al. (2009). "On instantaneous frequency."
+        *Advances in Adaptive Data Analysis*, 1(2), 177-229.
     """
     imf = imf.copy()
 
@@ -58,17 +77,30 @@ def normalize_imf(
     imf: np.ndarray, max_attempts: int = 150, crop_edges: float = 0.01
 ) -> np.ndarray:
     """
-    Normalize the IMF by iteratively dividing by its instantaneous amplitude spline.
+    Normalize an IMF to the range [-1, 1] by iterative amplitude division.
 
-    Parameters:
-        imf (np.ndarray): Input intrinsic mode function (IMF).
-        max_attempts (int): Maximum number of normalization attempts.
+    At each iteration, the instantaneous amplitude envelope :math:`a(t)` is
+    estimated via cubic spline interpolation through the peaks of
+    :math:`|x(t)|`, and the IMF is divided pointwise:
+
+    .. math::
+        x^{(k+1)}(t) = \\frac{x^{(k)}(t)}{a^{(k)}(t)}
+
+    Iteration stops when :math:`\\max|x(t)| \\leq 1`, or after
+    ``max_attempts``. Edge samples are set to NaN to suppress boundary
+    artifacts from the spline interpolation.
+
+    Args:
+        imf: Input IMF signal.
+        max_attempts: Maximum normalization iterations. Default 150.
+        crop_edges: Fraction of the signal to NaN at each end.
+            Default 0.01 (1%). Set to 0 to disable.
 
     Returns:
-        np.ndarray: Normalized IMF.
+        Normalized IMF with values in [-1, 1] (edges may be NaN).
 
     Raises:
-        ValueError: If the maximum value of the IMF remains greater than 1 after max_attempts.
+        ValueError: If normalization does not converge.
     """
     for _ in np.arange(max_attempts):
         if np.nanmax(np.abs(imf)) <= 1:
@@ -95,6 +127,19 @@ def normalize_imf(
 
 
 def calculate_instantaneous_amplitude_spline(imf: np.ndarray) -> np.ndarray:
+    """
+    Instantaneous amplitude via cubic spline through absolute-value peaks.
+
+    Finds local maxima of :math:`|x(t)|`, adds the signal endpoints,
+    and fits a cubic spline through these points to produce a smooth
+    amplitude envelope :math:`a(t)`.
+
+    Args:
+        imf: Input IMF signal.
+
+    Returns:
+        Instantaneous amplitude array, same length as ``imf``.
+    """
     x_max, _ = find_local_extrema(np.abs(imf))
     x_max = np.concatenate(([0], x_max, [len(imf) - 1]))
 
@@ -136,24 +181,27 @@ def quadrature_method(
     monocomponent_normalized: np.ndarray, sampling_frequency: float
 ) -> np.ndarray:
     """
-    Calculates the instantaneous frequency using the quadrature method.
+    Compute instantaneous frequency from a normalized IMF via quadrature.
 
-    Assuming an analytic signal of the form:
-
-    .. math::
-        z(t) = x(t) + i q(t)
-
-    The instantaneous frequency is given by:
+    Given a normalized IMF :math:`x(t) \\in [-1, 1]`, constructs the
+    analytic signal :math:`z(t) = x(t) + i\\,q(t)` where :math:`q(t)` is
+    the direct quadrature (see :func:`_calculate_quadrature`), then
+    extracts frequency from the phase derivative:
 
     .. math::
-        \\omega(t) = \\frac{F_s}{2 \\pi} \\cdot \\frac{d}{dt} \\measuredangle{z(t)}
+        f(t) = \\frac{f_s}{2\\pi} \\left|\\frac{d}{dt}
+               \\arg z(t)\\right|
 
     Args:
-        monocomponent_normalized (np.ndarray): IMF normalized between -1 and 1.
-        sampling_frequency (float): Sampling frequency in Hz.
+        monocomponent_normalized: IMF normalized to [-1, 1].
+        sampling_frequency: Sampling frequency in Hz.
 
     Returns:
-        np.ndarray: Instantaneous frequency.
+        Instantaneous frequency array (Hz).
+
+    Reference:
+        Huang, N.E. et al. (2009). "On instantaneous frequency."
+        *Advances in Adaptive Data Analysis*, 1(2), 177-229.
     """
     if not isinstance(monocomponent_normalized, np.ndarray):
         raise ValueError("Input must be a NumPy array.")
@@ -207,17 +255,36 @@ def calculate_instantaneous_frequency_hilbert(
     sampling_frequency: float,
 ) -> np.ndarray:
     """
-    Calculate the instantaneous frequency using the Hilbert transform.
+    Instantaneous frequency via the Hilbert transform.
 
-    Computes the analytic signal via scipy.signal.hilbert, then derives
-    instantaneous frequency from the unwrapped phase gradient.
+    Constructs the analytic signal using ``scipy.signal.hilbert``:
 
-    Parameters:
-        imf (np.ndarray): Input intrinsic mode function (IMF).
-        sampling_frequency (float): Sampling frequency of the signal.
+    .. math::
+        z(t) = x(t) + i\\,\\mathcal{H}[x(t)]
+
+    then extracts instantaneous frequency from the unwrapped phase:
+
+    .. math::
+        f(t) = \\frac{f_s}{2\\pi} \\left|\\frac{d}{dt}
+               \\arg z(t)\\right|
+
+    This is the standard approach in signal processing. It works well
+    when the Bedrosian condition is satisfied (amplitude spectrum and
+    frequency spectrum do not overlap). For wideband IMFs, consider the
+    quadrature method instead.
+
+    Args:
+        imf: Input IMF signal.
+        sampling_frequency: Sampling frequency in Hz.
 
     Returns:
-        np.ndarray: Instantaneous frequency array.
+        Instantaneous frequency array (Hz), same length as ``imf``.
+
+    Reference:
+        Huang, N.E. et al. (1998). "The empirical mode decomposition
+        and the Hilbert spectrum for nonlinear and non-stationary time
+        series analysis." *Proceedings of the Royal Society A*, 454,
+        903-995.
     """
     analytic_signal = hilbert(imf)
     phase = np.unwrap(np.angle(analytic_signal))
@@ -234,22 +301,57 @@ def hilbert_huang_transform(
     sampling_frequency: float,
     frequency_calculation_method: FrequencyCalculationMethod = calculate_instantaneous_frequency_quadrature,
     amplitude_calculation_method: AmplitudeCalculationMethod = calculate_instantaneous_amplitude_spline,
+    envelope_opts: Optional[EnvelopeOptions] = None,
+    decompose_fn: Optional[Callable] = None,
 ) -> (list[IntrinsicModeFunction], np.ndarray):
     """
-    Perform the Hilbert-Huang Transform on the input signal.
+    Hilbert-Huang Transform: decompose a signal and compute time-frequency representation.
 
-    Parameters:
+    Performs EMD (or a user-specified variant) to extract IMFs, then
+    computes instantaneous frequency and amplitude for each IMF. The
+    result can be used directly for Hilbert spectral analysis.
 
-        signal (np.ndarray): Input signal.
-        sampling_frequency (float): Sampling frequency of the signal.
-        amplitude_calculation_method:
-        frequency_calculation_method:
+    The HHT was introduced by Huang et al. (1998) as a method for
+    analyzing nonlinear and non-stationary signals. Unlike Fourier or
+    wavelet methods, it makes no assumptions about linearity or
+    stationarity.
+
+    Args:
+        signal: 1D input signal.
+        sampling_frequency: Sampling frequency in Hz.
+        frequency_calculation_method: Function to compute instantaneous
+            frequency. Signature: ``(imf, fs) -> frequency``. Default
+            is the direct quadrature method.
+        amplitude_calculation_method: Function to compute instantaneous
+            amplitude. Signature: ``(imf,) -> amplitude``. Default is
+            cubic spline through absolute-value peaks.
+        envelope_opts: Configuration for envelope interpolation during
+            sifting. See :class:`EnvelopeOptions`. Ignored when
+            ``decompose_fn`` is provided.
+        decompose_fn: Custom decomposition function. Must accept
+            ``signal`` as first argument and return ``(imfs, residue)``.
+            Use ``functools.partial`` to bind extra arguments::
+
+                from functools import partial
+                decompose_fn=partial(eemd, num_trials=100, seed=42)
+
+            Default is :func:`decompose` (standard EMD).
 
     Returns:
-        np.ndarray: Instantaneous frequency array.
-    """
+        Tuple of ``(imf_objects, residue)`` where ``imf_objects`` is a
+        list of :class:`IntrinsicModeFunction` and ``residue`` is the
+        decomposition residual.
 
-    imfs, residue = decompose(signal)
+    Reference:
+        Huang, N.E. et al. (1998). "The empirical mode decomposition
+        and the Hilbert spectrum for nonlinear and non-stationary time
+        series analysis." *Proceedings of the Royal Society A*, 454,
+        903-995.
+    """
+    if decompose_fn is not None:
+        imfs, residue = decompose_fn(signal)
+    else:
+        imfs, residue = decompose(signal, envelope_opts=envelope_opts)
 
     return [
         IntrinsicModeFunction(
@@ -268,16 +370,37 @@ def marginal_hilbert_spectrum(
     imfs: list[IntrinsicModeFunction], frequency_bin_size=None
 ):
     """
-    Computes the marginal hilbert spectrum.
+    Marginal Hilbert spectrum: time-integrated frequency-amplitude distribution.
+
+    Integrates the instantaneous amplitude over time for each frequency
+    bin, producing a one-dimensional spectrum analogous to the Fourier
+    power spectrum but derived from the Hilbert spectral analysis:
+
+    .. math::
+        h(\\omega) = \\frac{1}{T} \\int_0^T H(\\omega, t)\\, dt
+
+    where :math:`H(\\omega, t)` is the Hilbert spectrum (instantaneous
+    amplitude as a function of time and frequency).
+
+    Unlike the Fourier spectrum, the marginal Hilbert spectrum
+    represents the total amplitude (energy) contribution from each
+    frequency, accumulated over the entire signal duration.
 
     Args:
-        HilbertHuangTransform (class):              Object containing the imf components.
-        frequency_bin_size (float):                 Width of the frequency intervals.
+        imfs: List of :class:`IntrinsicModeFunction` objects (output of
+            :func:`hilbert_huang_transform`).
+        frequency_bin_size: Width of frequency bins in Hz. Default is
+            ``sampling_frequency / signal_length`` (one bin per DFT
+            frequency).
 
     Returns:
-    frequencies (np.array): Frequency base for marginal Hilbert Spectrum.
-    amplitudes (np.array):  Sum of amplitudes over the frequency base.
+        Tuple of ``(frequencies, amplitudes)`` — both 1D arrays.
 
+    Reference:
+        Huang, N.E. et al. (1998). "The empirical mode decomposition
+        and the Hilbert spectrum for nonlinear and non-stationary time
+        series analysis." *Proceedings of the Royal Society A*, 454,
+        903-995.
     """
     sampling_frequency = imfs[0].sampling_frequency
 
@@ -316,18 +439,20 @@ def marginal_hilbert_spectrum(
 
 def index_of_orthogonality(imfs: np.ndarray) -> float:
     """
-    Compute the index of orthogonality for a set of IMFs.
+    Index of orthogonality for a set of IMFs.
 
     Measures how orthogonal the extracted IMFs are to each other. A value
     close to zero indicates a good decomposition where IMFs capture
-    independent oscillatory modes with minimal leakage between them.
+    independent oscillatory modes with minimal energy leakage.
 
-    The index is defined as the sum of all pairwise cross-energies,
-    normalized by the total signal energy:
+    Defined as the sum of all pairwise cross-energies, normalized by
+    the total signal energy:
 
     .. math::
         IO = \\frac{\\sum_{i \\neq j} |\\langle c_i, c_j \\rangle|}
              {2 \\, \\sum_t x(t)^2}
+
+    where :math:`c_i` are the IMFs and :math:`x(t) = \\sum_i c_i(t)`.
 
     Args:
         imfs: Array of IMF signals, shape ``(n_imfs, n_samples)``.
@@ -336,6 +461,12 @@ def index_of_orthogonality(imfs: np.ndarray) -> float:
     Returns:
         Index of orthogonality (float). Lower is better; 0 means
         perfectly orthogonal IMFs.
+
+    Reference:
+        Huang, N.E. et al. (1998). "The empirical mode decomposition
+        and the Hilbert spectrum for nonlinear and non-stationary time
+        series analysis." *Proceedings of the Royal Society A*, 454,
+        903-995. (Section 3.4)
     """
     if len(imfs) < 2:
         return 0.0

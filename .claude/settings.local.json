@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest hhtpy/tests.py -v)",
+      "Bash(python -c \"from hhtpy.hht import normalize_imf, marginal_hilbert_spectrum, IntrinsicModeFunction; from hhtpy._emd_utils import is_imf; print\\(''All imports OK''\\)\")",
+      "Bash(python -c \":*)",
+      "Bash(ls /Users/kulia/dev/sal/hhtpy/venv/bin/python*)",
+      "Bash(/Users/kulia/dev/sal/hhtpy/venv/bin/python --version)",
+      "Bash(/Users/kulia/dev/sal/hhtpy/venv/bin/pip install numpy scipy matplotlib)",
+      "Bash(/Users/kulia/dev/sal/hhtpy/venv/bin/python3.10 --version)",
+      "Bash(/Users/kulia/dev/sal/hhtpy/venv/bin/python3.10 -m pip install numpy scipy matplotlib)",
+      "Bash(/Users/kulia/dev/sal/hhtpy/venv/bin/python3.10 -m pytest hhtpy/tests.py -v)",
+      "Bash(/Users/kulia/dev/sal/hhtpy/venv/bin/python3.10 -m pip install pytest)",
+      "Bash(source /Users/kulia/dev/sal/hhtpy/venv/bin/activate)",
+      "Bash(python -c \"import matplotlib; import numpy; import scipy; print\\(f''numpy {numpy.__version__}, scipy {scipy.__version__}, matplotlib {matplotlib.__version__}''\\)\")",
+      "Bash(pip install pytest)",
+      "Bash(python example_figure3.py)",
+      "Bash(pip install:*)",
+      "Bash(gh api \"repos/SignalAnalysisLab/hht/contents/hht/imf/__init__.py\" --jq '.content')",
+      "Bash(gh repo:*)",
+      "Bash(git remote:*)"
+    ]
+  }
+}

@@ -14,7 +14,22 @@ from hhtpy.sift_stopping_criteria import (
 from hhtpy.hht import index_of_orthogonality
 from hhtpy.ensemble_emd import eemd, ceemdan
 from hhtpy.multivariate_emd import memd
-from hhtpy.plot import plot_imfs
+from hhtpy.masked_emd import (
+    masked_decompose,
+    adaptive_masked_decompose,
+    mask_init_huang,
+    mask_init_deering_kaiser,
+    mask_init_spectral,
+)
+from hhtpy.frequency_methods import (
+    calculate_instantaneous_frequency_zero_crossing,
+    calculate_instantaneous_frequency_generalized_zero_crossing,
+    calculate_instantaneous_frequency_teo,
+    calculate_instantaneous_frequency_hou,
+    calculate_instantaneous_frequency_wu,
+    despike_frequency,
+)
+from hhtpy.plot import plot_imfs, plot_hilbert_spectrum_contour
 import matplotlib.pyplot as plt
 
 
@@ -230,6 +245,40 @@ class TestHHTFrequencyEstimation(unittest.TestCase):
             peak_freq, true_freq, delta=3.0,
             msg=f"Marginal spectrum peak should be ~{true_freq} Hz, got {peak_freq:.1f} Hz",
         )
+
+
+class TestHHTDecomposeFn(unittest.TestCase):
+
+    def test_hht_with_eemd(self):
+        """HHT with EEMD decomposition via decompose_fn."""
+        from functools import partial
+
+        f_s = 5000
+        t = np.arange(2 * f_s) / f_s
+        signal = np.cos(2 * np.pi * 25 * t)
+
+        imf_objects, residue = hilbert_huang_transform(
+            signal, f_s,
+            decompose_fn=partial(eemd, num_trials=5, seed=42),
+        )
+
+        self.assertGreater(len(imf_objects), 0)
+        self.assertIsNotNone(imf_objects[0].instantaneous_frequency)
+
+    def test_hht_with_ceemdan(self):
+        """HHT with CEEMDAN decomposition via decompose_fn."""
+        from functools import partial
+
+        f_s = 5000
+        t = np.arange(2 * f_s) / f_s
+        signal = np.cos(2 * np.pi * 25 * t)
+
+        imf_objects, residue = hilbert_huang_transform(
+            signal, f_s,
+            decompose_fn=partial(ceemdan, num_trials=5, seed=42),
+        )
+
+        self.assertGreater(len(imf_objects), 0)
 
 
 class TestPlotSubplots(unittest.TestCase):
@@ -505,6 +554,22 @@ class TestEEMD(unittest.TestCase):
         corr_low = np.abs(np.corrcoef(imfs[0], low)[0, 1])
         self.assertGreater(corr_high, corr_low)
 
+    def test_eemd_parallel(self):
+        """Parallel EEMD should produce valid IMFs."""
+        signal = self._make_signal()
+        imfs, residue = eemd(signal, num_trials=10, seed=42, n_jobs=2)
+
+        self.assertGreater(len(imfs), 0)
+        self.assertEqual(imfs.shape[1], len(signal))
+
+    def test_eemd_parallel_reproducible(self):
+        """Parallel EEMD with same seed should be reproducible."""
+        signal = self._make_signal()
+        imfs1, _ = eemd(signal, num_trials=10, seed=42, n_jobs=2)
+        imfs2, _ = eemd(signal, num_trials=10, seed=42, n_jobs=2)
+
+        np.testing.assert_array_equal(imfs1, imfs2)
+
 
 class TestCEEMDAN(unittest.TestCase):
 
@@ -558,6 +623,23 @@ class TestCEEMDAN(unittest.TestCase):
         corr_high = np.abs(np.corrcoef(imfs[0], high)[0, 1])
         corr_low = np.abs(np.corrcoef(imfs[0], low)[0, 1])
         self.assertGreater(corr_high, corr_low)
+
+    def test_ceemdan_parallel(self):
+        """Parallel CEEMDAN should guarantee exact reconstruction."""
+        signal = self._make_signal()
+        imfs, residue = ceemdan(signal, num_trials=10, seed=42, n_jobs=2)
+
+        reconstructed = np.sum(imfs, axis=0) + residue
+        np.testing.assert_allclose(reconstructed, signal, atol=1e-10)
+
+    def test_ceemdan_parallel_reproducible(self):
+        """Parallel CEEMDAN with same seed should be reproducible."""
+        signal = self._make_signal()
+        imfs1, res1 = ceemdan(signal, num_trials=10, seed=42, n_jobs=2)
+        imfs2, res2 = ceemdan(signal, num_trials=10, seed=42, n_jobs=2)
+
+        np.testing.assert_array_equal(imfs1, imfs2)
+        np.testing.assert_array_equal(res1, res2)
 
 
 class TestMEMD(unittest.TestCase):
@@ -628,6 +710,392 @@ class TestMEMD(unittest.TestCase):
         bad_signal = np.random.randn(100, 10)  # 100 channels, 10 samples
         with self.assertRaises(ValueError):
             memd(bad_signal)
+
+
+class TestFrequencyMethods(unittest.TestCase):
+    """Test all instantaneous frequency estimation methods."""
+
+    def _make_cosine(self, freq=25, f_s=5000, duration=3):
+        t = np.arange(duration * f_s) / f_s
+        return np.cos(2 * np.pi * freq * t), f_s, freq
+
+    def test_zero_crossing_frequency(self):
+        signal, f_s, true_freq = self._make_cosine()
+        freq = calculate_instantaneous_frequency_zero_crossing(signal, f_s)
+
+        valid = freq[~np.isnan(freq)]
+        self.assertGreater(len(valid), 0)
+        median_freq = np.median(valid)
+        self.assertAlmostEqual(median_freq, true_freq, delta=1.0)
+
+    def test_generalized_zero_crossing_frequency(self):
+        signal, f_s, true_freq = self._make_cosine()
+        freq = calculate_instantaneous_frequency_generalized_zero_crossing(signal, f_s)
+
+        valid = freq[~np.isnan(freq)]
+        self.assertGreater(len(valid), 0)
+        median_freq = np.median(valid)
+        self.assertAlmostEqual(median_freq, true_freq, delta=2.0)
+
+    def test_teo_frequency(self):
+        signal, f_s, true_freq = self._make_cosine()
+        freq = calculate_instantaneous_frequency_teo(signal, f_s)
+
+        valid = freq[~np.isnan(freq)]
+        self.assertGreater(len(valid), 0)
+        # TEO can be noisy — use larger tolerance
+        interior = valid[len(valid) // 10: -len(valid) // 10]
+        median_freq = np.median(interior)
+        self.assertAlmostEqual(median_freq, true_freq, delta=3.0)
+
+    def test_hou_frequency(self):
+        signal, f_s, true_freq = self._make_cosine()
+        freq = calculate_instantaneous_frequency_hou(signal, f_s)
+
+        valid = freq[~np.isnan(freq)]
+        self.assertGreater(len(valid), 0)
+        median_freq = np.median(valid)
+        self.assertAlmostEqual(median_freq, true_freq, delta=2.0)
+
+    def test_wu_frequency(self):
+        signal, f_s, true_freq = self._make_cosine()
+        freq = calculate_instantaneous_frequency_wu(signal, f_s)
+
+        valid = freq[~np.isnan(freq)]
+        self.assertGreater(len(valid), 0)
+        median_freq = np.median(valid)
+        self.assertAlmostEqual(median_freq, true_freq, delta=3.0)
+
+    def test_all_methods_in_hht_pipeline(self):
+        """All IF methods should work when passed to hilbert_huang_transform."""
+        f_s = 5000
+        t = np.arange(2 * f_s) / f_s
+        signal = np.cos(2 * np.pi * 20 * t)
+
+        methods = [
+            calculate_instantaneous_frequency_zero_crossing,
+            calculate_instantaneous_frequency_generalized_zero_crossing,
+            calculate_instantaneous_frequency_teo,
+            calculate_instantaneous_frequency_hou,
+        ]
+
+        for method in methods:
+            imf_objects, residue = hilbert_huang_transform(
+                signal, f_s, frequency_calculation_method=method
+            )
+            self.assertGreater(len(imf_objects), 0, f"Failed for {method.__name__}")
+
+
+class TestDespikeFrequency(unittest.TestCase):
+
+    def test_despike_removes_extrema_spikes(self):
+        """Frequency spikes at extrema should be smoothed out."""
+        from scipy.signal import find_peaks
+
+        f_s = 1000
+        t = np.arange(3 * f_s) / f_s
+        imf = np.cos(2 * np.pi * 10 * t)
+
+        # Place spikes exactly at detected peaks
+        maxima, _ = find_peaks(imf)
+        freq = np.full(len(t), 10.0)
+        for idx in maxima[:5]:
+            freq[idx] = 100.0  # artificial spike
+
+        despiked = despike_frequency(freq, imf)
+
+        # Spikes at extrema should be reduced
+        self.assertLess(np.max(despiked), np.max(freq))
+
+    def test_despike_preserves_clean_signal(self):
+        """A clean frequency signal should be mostly unchanged."""
+        imf = np.cos(2 * np.pi * 10 * np.arange(1000) / 1000)
+        freq = np.full(1000, 10.0)
+
+        despiked = despike_frequency(freq, imf)
+
+        # Should be very close to original
+        np.testing.assert_allclose(despiked, freq, atol=0.1)
+
+
+class TestMaskedEMD(unittest.TestCase):
+
+    def _make_signal(self):
+        f_s = 1000
+        t = np.arange(3 * f_s) / f_s
+        return np.cos(2 * np.pi * 10 * t) + 0.5 * np.cos(2 * np.pi * 50 * t), f_s
+
+    def test_masked_decompose_produces_imfs(self):
+        signal, f_s = self._make_signal()
+        imfs, residue = masked_decompose(
+            signal, mask_frequency=80, mask_amplitude=1.0,
+            sampling_frequency=f_s,
+        )
+
+        self.assertGreater(len(imfs), 0)
+        self.assertEqual(imfs.shape[1], len(signal))
+
+    def test_masked_decompose_round_trip(self):
+        signal, f_s = self._make_signal()
+        imfs, residue = masked_decompose(
+            signal, mask_frequency=80, mask_amplitude=1.0,
+            sampling_frequency=f_s,
+        )
+
+        reconstructed = np.sum(imfs, axis=0) + residue
+        np.testing.assert_allclose(
+            reconstructed, signal, atol=1e-10,
+            err_msg="Masked EMD must reconstruct the signal",
+        )
+
+    def test_adaptive_masked_decompose(self):
+        signal, f_s = self._make_signal()
+        imfs, residue = adaptive_masked_decompose(
+            signal, sampling_frequency=f_s,
+        )
+
+        self.assertGreater(len(imfs), 0)
+        reconstructed = np.sum(imfs, axis=0) + residue
+        np.testing.assert_allclose(reconstructed, signal, atol=1e-10)
+
+    def test_adaptive_with_deering_kaiser(self):
+        signal, f_s = self._make_signal()
+        imfs, residue = adaptive_masked_decompose(
+            signal, sampling_frequency=f_s,
+            mask_init_method=mask_init_deering_kaiser,
+        )
+
+        self.assertGreater(len(imfs), 0)
+        reconstructed = np.sum(imfs, axis=0) + residue
+        np.testing.assert_allclose(reconstructed, signal, atol=1e-10)
+
+    def test_adaptive_with_spectral(self):
+        signal, f_s = self._make_signal()
+        imfs, residue = adaptive_masked_decompose(
+            signal, sampling_frequency=f_s,
+            mask_init_method=mask_init_spectral,
+        )
+
+        self.assertGreater(len(imfs), 0)
+        reconstructed = np.sum(imfs, axis=0) + residue
+        np.testing.assert_allclose(reconstructed, signal, atol=1e-10)
+
+    def test_mask_init_methods_return_valid(self):
+        """All mask init methods should return positive frequency and amplitude."""
+        f_s = 1000
+        t = np.arange(3 * f_s) / f_s
+        signal = np.cos(2 * np.pi * 20 * t) + 0.5 * np.cos(2 * np.pi * 60 * t)
+
+        for method in [mask_init_huang, mask_init_deering_kaiser, mask_init_spectral]:
+            f, a = method(signal, f_s)
+            self.assertGreater(f, 0, f"{method.__name__} frequency must be positive")
+            self.assertGreater(a, 0, f"{method.__name__} amplitude must be positive")
+
+    def test_masked_emd_edge_cases(self):
+        with self.assertRaises(ValueError):
+            masked_decompose(np.array([]), 100, 1.0, 1000)
+        with self.assertRaises(ValueError):
+            masked_decompose(np.array([[1, 2], [3, 4]]), 100, 1.0, 1000)
+
+
+class TestSignificanceTest(unittest.TestCase):
+
+    def test_white_noise_imfs_aposteriori(self):
+        """A posteriori test on white noise: most IMFs should not be significant."""
+        from hhtpy.significance import significance_test
+
+        rng = np.random.default_rng(42)
+        noise = rng.normal(0, 1, 5000)
+        imfs, _ = decompose(noise)
+
+        results = significance_test(imfs, alpha=0.95, method="aposteriori")
+
+        # A posteriori test uses first IMF as noise reference, so it
+        # should flag fewer IMFs as significant for pure noise
+        n_significant = sum(r.is_significant for r in results)
+        self.assertLess(n_significant, len(results))
+
+    def test_signal_imfs_are_significant(self):
+        """IMFs from a clear signal should be significant."""
+        from hhtpy.significance import significance_test
+
+        t = np.arange(5000) / 1000
+        signal = 5 * np.cos(2 * np.pi * 10 * t) + 3 * np.cos(2 * np.pi * 50 * t)
+        imfs, _ = decompose(signal)
+
+        results = significance_test(imfs, alpha=0.95, method="apriori")
+
+        # At least one IMF should be significant (the signal IMFs)
+        n_significant = sum(r.is_significant for r in results)
+        self.assertGreater(n_significant, 0)
+
+    def test_aposteriori_method(self):
+        """A posteriori test should work and return results for all IMFs."""
+        from hhtpy.significance import significance_test
+
+        t = np.arange(3000) / 1000
+        signal = np.cos(2 * np.pi * 10 * t) + 0.1 * np.random.default_rng(42).normal(0, 1, 3000)
+        imfs, _ = decompose(signal)
+
+        results = significance_test(imfs, alpha=0.95, method="aposteriori")
+
+        self.assertEqual(len(results), len(imfs))
+        # A posteriori results should have lower_bound=None
+        for r in results:
+            self.assertIsNone(r.lower_bound)
+
+    def test_result_fields(self):
+        """SignificanceResult should have all expected fields."""
+        from hhtpy.significance import significance_test
+
+        rng = np.random.default_rng(42)
+        signal = rng.normal(0, 1, 2000)
+        imfs, _ = decompose(signal)
+
+        results = significance_test(imfs, alpha=0.95, method="apriori")
+
+        for r in results:
+            self.assertIsInstance(r.index, int)
+            self.assertIsInstance(r.is_significant, (bool, np.bool_))
+            self.assertIsInstance(r.log_energy, float)
+            self.assertIsInstance(r.log_period, float)
+            self.assertIsInstance(r.upper_bound, float)
+            # a priori should have lower bound
+            self.assertIsInstance(r.lower_bound, float)
+
+    def test_empty_imfs(self):
+        """Empty IMF array should return empty results."""
+        from hhtpy.significance import significance_test
+
+        results = significance_test(np.empty((0, 100)), alpha=0.95)
+        self.assertEqual(len(results), 0)
+
+    def test_invalid_inputs(self):
+        """Invalid inputs should raise ValueError."""
+        from hhtpy.significance import significance_test
+
+        with self.assertRaises(ValueError):
+            significance_test(np.array([1, 2, 3]))  # 1D, not 2D
+        with self.assertRaises(ValueError):
+            significance_test(np.zeros((3, 100)), alpha=1.5)
+        with self.assertRaises(ValueError):
+            significance_test(np.zeros((3, 100)), method="invalid")
+
+
+class TestEnvelopeOptions(unittest.TestCase):
+
+    def _make_signal(self):
+        f_s = 1000
+        t = np.arange(3 * f_s) / f_s
+        return np.cos(2 * np.pi * 10 * t) + 0.5 * np.cos(2 * np.pi * 50 * t)
+
+    def test_pchip_spline_decomposition(self):
+        """PChip spline should produce valid decomposition."""
+        from hhtpy._emd_utils import EnvelopeOptions
+
+        signal = self._make_signal()
+        opts = EnvelopeOptions(spline_method="pchip")
+        imfs, residue = decompose(signal, envelope_opts=opts)
+
+        self.assertGreater(len(imfs), 0)
+        reconstructed = np.sum(imfs, axis=0) + residue
+        np.testing.assert_allclose(reconstructed, signal, atol=1e-10)
+
+    def test_akima_spline_decomposition(self):
+        """Akima spline should produce valid decomposition."""
+        from hhtpy._emd_utils import EnvelopeOptions
+
+        signal = self._make_signal()
+        opts = EnvelopeOptions(spline_method="akima")
+        imfs, residue = decompose(signal, envelope_opts=opts)
+
+        self.assertGreater(len(imfs), 0)
+        reconstructed = np.sum(imfs, axis=0) + residue
+        np.testing.assert_allclose(reconstructed, signal, atol=1e-10)
+
+    def test_mirror_boundary_decomposition(self):
+        """Mirror boundary should produce valid decomposition."""
+        from hhtpy._emd_utils import EnvelopeOptions
+
+        signal = self._make_signal()
+        opts = EnvelopeOptions(boundary_mode="mirror")
+        imfs, residue = decompose(signal, envelope_opts=opts)
+
+        self.assertGreater(len(imfs), 0)
+        reconstructed = np.sum(imfs, axis=0) + residue
+        np.testing.assert_allclose(reconstructed, signal, atol=1e-10)
+
+    def test_none_boundary_decomposition(self):
+        """None boundary should produce valid decomposition."""
+        from hhtpy._emd_utils import EnvelopeOptions
+
+        signal = self._make_signal()
+        opts = EnvelopeOptions(boundary_mode="none")
+        imfs, residue = decompose(signal, envelope_opts=opts)
+
+        self.assertGreater(len(imfs), 0)
+        reconstructed = np.sum(imfs, axis=0) + residue
+        np.testing.assert_allclose(reconstructed, signal, atol=1e-10)
+
+    def test_pchip_with_mirror(self):
+        """Combined PChip + mirror should work."""
+        from hhtpy._emd_utils import EnvelopeOptions
+
+        signal = self._make_signal()
+        opts = EnvelopeOptions(spline_method="pchip", boundary_mode="mirror")
+        imfs, residue = decompose(signal, envelope_opts=opts)
+
+        self.assertGreater(len(imfs), 0)
+        reconstructed = np.sum(imfs, axis=0) + residue
+        np.testing.assert_allclose(reconstructed, signal, atol=1e-10)
+
+    def test_envelope_opts_in_hht(self):
+        """EnvelopeOptions should work through hilbert_huang_transform."""
+        from hhtpy._emd_utils import EnvelopeOptions
+
+        signal = self._make_signal()
+        opts = EnvelopeOptions(spline_method="pchip")
+        imf_objects, residue = hilbert_huang_transform(
+            signal, 1000, envelope_opts=opts
+        )
+
+        self.assertGreater(len(imf_objects), 0)
+
+    def test_invalid_spline_method(self):
+        """Invalid spline method should raise ValueError."""
+        from hhtpy._emd_utils import EnvelopeOptions, sift
+
+        signal = self._make_signal()
+        opts = EnvelopeOptions(spline_method="invalid")
+        with self.assertRaises(ValueError):
+            decompose(signal, envelope_opts=opts)
+
+
+class TestContourPlot(unittest.TestCase):
+
+    def test_contour_plot_creates_figure(self):
+        f_s = 5000
+        t = np.arange(2 * f_s) / f_s
+        signal = np.cos(2 * np.pi * 25 * t)
+
+        imf_objects, _ = hilbert_huang_transform(signal, f_s)
+        fig, ax, cs = plot_hilbert_spectrum_contour(imf_objects)
+
+        self.assertIsInstance(fig, plt.Figure)
+        plt.close(fig)
+
+    def test_contour_plot_with_max_imfs(self):
+        f_s = 5000
+        t = np.arange(2 * f_s) / f_s
+        signal = np.cos(2 * np.pi * 25 * t) + 0.5 * np.cos(2 * np.pi * 60 * t)
+
+        imf_objects, _ = hilbert_huang_transform(signal, f_s)
+        fig, ax, cs = plot_hilbert_spectrum_contour(
+            imf_objects, max_number_of_imfs=1
+        )
+
+        self.assertIsInstance(fig, plt.Figure)
+        plt.close(fig)
 
 
 if __name__ == "__main__":

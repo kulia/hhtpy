@@ -19,30 +19,50 @@ def memd(
     stop_threshold: float = 0.075,
 ):
     """
-    Multivariate Empirical Mode Decomposition (Rehman & Mandic, 2010).
+    Multivariate Empirical Mode Decomposition (MEMD).
 
     Decomposes a multi-channel signal into multivariate Intrinsic Mode
-    Functions (IMFs). Each IMF is a matrix of the same shape as the input
-    signal, with aligned oscillatory modes across all channels.
+    Functions (IMFs). The sifting process works by projecting the
+    multivariate signal onto *K* uniformly distributed direction
+    vectors :math:`\\mathbf{v}_k` on the unit hypersphere:
+
+    .. math::
+        p_k(t) = \\mathbf{v}_k^T \\mathbf{x}(t)
+
+    For each projection, upper and lower envelopes are computed and
+    their mean is back-projected. The multivariate mean envelope is:
+
+    .. math::
+        \\bar{\\mathbf{e}}(t) = \\frac{1}{K} \\sum_{k=1}^{K}
+        \\mathbf{v}_k \\, \\frac{e^+_k(t) + e^-_k(t)}{2}
+
+    Sifting subtracts this mean envelope iteratively until convergence.
 
     Unlike applying univariate EMD to each channel separately, MEMD
     ensures that common oscillatory scales across channels are captured
-    in the same IMF index (the *alignment property*).
+    in the same IMF index (the *alignment property*). Direction vectors
+    are generated using the Hammersley quasi-random sequence for uniform
+    coverage.
 
     Args:
         signal: Input signal of shape ``(n_channels, n_samples)``.
-        num_directions: Number of direction vectors on the unit
-            hypersphere. Must be >= 2 * n_channels. Default is 64.
+        num_directions: Number of direction vectors *K* on the unit
+            hypersphere. Must be >= ``2 * n_channels``. Default is 64.
         max_imfs: Maximum number of IMFs to extract. If ``None``,
             uses ``floor(log2(n_samples)) - 1``.
         max_sifts: Maximum sifting iterations per IMF. Default is 100.
-        stop_threshold: Normalized mean envelope threshold for the
-            sifting stopping criterion. Default is 0.075.
+        stop_threshold: Normalized mean envelope power threshold for
+            the sifting stopping criterion. Default is 0.075.
 
     Returns:
-        Tuple of (imfs, residue):
-            - imfs (np.ndarray): Shape ``(n_imfs, n_channels, n_samples)``.
-            - residue (np.ndarray): Shape ``(n_channels, n_samples)``.
+        Tuple of ``(imfs, residue)``:
+            - **imfs**: shape ``(n_imfs, n_channels, n_samples)``
+            - **residue**: shape ``(n_channels, n_samples)``
+
+    Reference:
+        Rehman, N. & Mandic, D.P. (2010). "Multivariate empirical mode
+        decomposition." *Proceedings of the Royal Society A*, 466,
+        1291-1302.
     """
     signal = np.asarray(signal, dtype=float)
 

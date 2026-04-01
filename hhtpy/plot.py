@@ -26,11 +26,24 @@ def plot_hilbert_spectrum(
     config: HilbertSpectrumConfig = HilbertSpectrumConfig(),
 ):
     """
-    Hilbert spectrum plotting time-frequency against amplitude/power [Huang98]_.
+    Plot the Hilbert spectrum: time-frequency colored by amplitude.
+
+    Each IMF's instantaneous frequency trace is drawn as a colored line
+    where the color represents instantaneous amplitude. This is the
+    standard Hilbert spectrum visualization from Huang et al. (1998).
 
     Args:
-        imfs (list[IntrinsicModeFunction]): The IMFs to plot.
-        config (HilbertSpectrumConfig): Configuration for the plot.
+        imfs: List of :class:`IntrinsicModeFunction` objects from
+            :func:`hilbert_huang_transform`.
+        config: Plot configuration (color scale, axis limits, etc.).
+
+    Returns:
+        Tuple of ``(fig, ax, colorbar)``.
+
+    Reference:
+        Huang, N.E. et al. (1998). "The empirical mode decomposition
+        and the Hilbert spectrum for nonlinear and non-stationary time
+        series analysis." *Proc. R. Soc. A*, 454, 903-995.
     """
     if len(imfs) == 0:
         raise ValueError("No IMFs to plot.")
@@ -111,12 +124,17 @@ def plot_imfs(
     max_number_of_imfs: int = None,
 ):
     """
-    Plot the IMFs and the _residue of the EMD decomposition.
+    Plot the IMFs (and optionally the signal and residue) as subplots.
 
     Args:
-        imfs (np.ndarray): The IMFs to plot.
-        signal (np.ndarray): The original signal.
-        residure (np.ndarray): The _residue of the EMD decomposition.
+        imfs: IMFs as a 2D array or list of :class:`IntrinsicModeFunction`.
+        signal: Original signal to plot above the IMFs.
+        residue: Decomposition residue to plot below the IMFs.
+        x_axis: Custom x-axis values (e.g., time vector).
+        max_number_of_imfs: Limit the number of IMFs shown.
+
+    Returns:
+        Tuple of ``(fig, axs)``.
     """
     imfs = (
         [imf.signal for imf in imfs]
@@ -161,9 +179,118 @@ def plot_imfs(
     return fig, axs
 
 
+def plot_hilbert_spectrum_contour(
+    imfs: list[IntrinsicModeFunction],
+    num_frequency_bins: int = 200,
+    num_time_bins: int = 200,
+    max_number_of_imfs: Optional[int] = None,
+    log_color: bool = True,
+    fig=None,
+    ax=None,
+):
+    """
+    Contour-style Hilbert spectrum.
+
+    Accumulates instantaneous amplitude into a 2D time-frequency grid
+    and renders as a filled contour plot. This gives a smoother, more
+    readable visualization than the line-collection Hilbert spectrum,
+    especially for dense or noisy signals.
+
+    Args:
+        imfs: List of IntrinsicModeFunction objects.
+        num_frequency_bins: Number of frequency bins. Default 200.
+        num_time_bins: Number of time bins. Default 200.
+        max_number_of_imfs: Limit the number of IMFs to plot.
+        log_color: Use logarithmic color scale. Default True.
+        fig: Existing figure (optional).
+        ax: Existing axes (optional).
+
+    Returns:
+        Tuple of (fig, ax, contour_set).
+    """
+    if len(imfs) == 0:
+        raise ValueError("No IMFs to plot.")
+
+    num_imfs = min(len(imfs), max_number_of_imfs) if max_number_of_imfs else len(imfs)
+
+    fig = plt.figure() if fig is None else fig
+    ax = fig.add_subplot(111) if ax is None else ax
+
+    f_s = imfs[0].sampling_frequency
+    n_samples = len(imfs[0].signal)
+    t_max = n_samples / f_s
+
+    f_min, f_max = get_freq_lim(imfs[:num_imfs], percentile=1)
+    f_min = max(f_min, 0)
+
+    t_edges = np.linspace(0, t_max, num_time_bins + 1)
+    f_edges = np.linspace(f_min, f_max, num_frequency_bins + 1)
+    spectrum = np.zeros((num_frequency_bins, num_time_bins))
+
+    time_axis = np.arange(n_samples) / f_s
+
+    for imf in imfs[:num_imfs]:
+        freq = imf.instantaneous_frequency
+        amp = imf.instantaneous_amplitude
+
+        valid = ~np.isnan(freq) & ~np.isnan(amp) & (freq >= f_min) & (freq <= f_max)
+        if not np.any(valid):
+            continue
+
+        t_idx = np.digitize(time_axis[valid], t_edges) - 1
+        f_idx = np.digitize(freq[valid], f_edges) - 1
+
+        t_idx = np.clip(t_idx, 0, num_time_bins - 1)
+        f_idx = np.clip(f_idx, 0, num_frequency_bins - 1)
+
+        np.add.at(spectrum, (f_idx, t_idx), amp[valid])
+
+    # Replace zeros for log scale
+    spectrum_plot = spectrum.copy()
+    if log_color:
+        spectrum_plot[spectrum_plot <= 0] = np.nan
+
+    t_centers = (t_edges[:-1] + t_edges[1:]) / 2
+    f_centers = (f_edges[:-1] + f_edges[1:]) / 2
+
+    if log_color:
+        valid_vals = spectrum_plot[~np.isnan(spectrum_plot)]
+        if len(valid_vals) > 0:
+            vmin = np.percentile(valid_vals[valid_vals > 0], 5) if np.any(valid_vals > 0) else 1e-10
+            vmax = np.max(valid_vals)
+            cs = ax.contourf(
+                t_centers, f_centers, spectrum_plot,
+                levels=np.logspace(np.log10(vmin), np.log10(vmax), 30),
+                norm=colors.LogNorm(vmin=vmin, vmax=vmax),
+            )
+        else:
+            cs = ax.contourf(t_centers, f_centers, spectrum_plot, levels=30)
+    else:
+        cs = ax.contourf(t_centers, f_centers, spectrum_plot, levels=30)
+
+    clb = fig.colorbar(cs, ax=ax, aspect=20, fraction=0.1, pad=0.02)
+    clb.set_label("Amplitude")
+
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Frequency (Hz)")
+
+    return fig, ax, cs
+
+
 def plot_marginal_hilbert_spectrum(
     imfs: list[IntrinsicModeFunction], fig=None, ax=None
 ):
+    """
+    Plot the marginal Hilbert spectrum (time-integrated amplitude vs frequency).
+
+    Args:
+        imfs: List of :class:`IntrinsicModeFunction` objects.
+        fig: Existing figure (optional).
+        ax: Existing axes (optional).
+
+    Returns:
+        Tuple of ``(fig, ax)``.
+    """
     fig = plt.figure() if fig is None else fig
     ax = fig.add_subplot(111) if ax is None else ax
 

@@ -22,6 +22,32 @@ y = np.cos(2 * np.pi * 50 * t + 20 * np.sin(2 * np.pi * 0.5 * t)) + 2 * np.cos(
 imfs, residue = hilbert_huang_transform(y, f_s)
 ```
 
+### Using Different Decomposition Methods
+
+By default, `hilbert_huang_transform` uses standard EMD. To use EEMD, CEEMDAN, or masked EMD instead, pass a `decompose_fn`:
+
+```python
+from functools import partial
+from hhtpy import hilbert_huang_transform, eemd, ceemdan, adaptive_masked_decompose
+
+# EEMD (parallel, 100 trials)
+imfs, residue = hilbert_huang_transform(
+    y, f_s, decompose_fn=partial(eemd, num_trials=100, seed=42, n_jobs=-1)
+)
+
+# CEEMDAN (exact reconstruction)
+imfs, residue = hilbert_huang_transform(
+    y, f_s, decompose_fn=partial(ceemdan, num_trials=100, seed=42)
+)
+
+# Adaptive masked EMD
+imfs, residue = hilbert_huang_transform(
+    y, f_s, decompose_fn=partial(adaptive_masked_decompose, sampling_frequency=f_s)
+)
+```
+
+Any function that takes `signal` as its first argument and returns `(imfs, residue)` works.
+
 ## Plotting
 
 ### IMFs
@@ -69,11 +95,17 @@ imfs, residue = decompose(signal)
 ### Parameters
 
 ```python
+from hhtpy import EnvelopeOptions
+
 imfs, residue = decompose(
     signal,                   # 1D numpy array
     stopping_criterion=...,   # Controls when sifting stops (see below)
     max_imfs=None,            # Limit number of IMFs (None = automatic)
     max_sifts=100,            # Safety limit per IMF to prevent non-convergence
+    envelope_opts=EnvelopeOptions(
+        spline_method="cubic",    # "cubic", "pchip", or "akima"
+        boundary_mode="linear",   # "linear", "mirror", or "none"
+    ),
 )
 ```
 
@@ -81,6 +113,9 @@ imfs, residue = decompose(
   how many components your signal has, or for faster computation.
 - **max_sifts**: Safety valve that stops sifting after 100 iterations even if the
   stopping criterion hasn't been met. Only relevant for adaptive criteria.
+- **envelope_opts**: Controls how envelopes are interpolated during sifting.
+  - `spline_method`: `"cubic"` (default), `"pchip"` (monotone, no overshoot), or `"akima"` (smooth, reduced overshoot).
+  - `boundary_mode`: `"linear"` (default, extrapolate from nearest extrema), `"mirror"` (reflect extrema at boundaries), or `"none"` (use endpoint values directly).
 
 ## Stopping Criteria
 
@@ -156,7 +191,7 @@ imfs, residue = decompose(signal, stopping_criterion=my_criterion)
 
 ## Instantaneous Frequency Methods
 
-After decomposition, hhtpy computes instantaneous frequency and amplitude for each IMF. Two methods are available:
+After decomposition, hhtpy computes instantaneous frequency and amplitude for each IMF. Seven methods are available, all passed via the `frequency_calculation_method` parameter:
 
 ### Quadrature Method (Default)
 
@@ -183,6 +218,41 @@ imfs, residue = hilbert_huang_transform(
 )
 ```
 
+### Additional Methods
+
+All methods follow the same `(imf, sampling_frequency) -> frequency` signature:
+
+| Method | Function | Description |
+|--------|----------|-------------|
+| Zero-crossing | `calculate_instantaneous_frequency_zero_crossing` | Half-period zero-crossing intervals. Simple, no normalization needed. |
+| GZC | `calculate_instantaneous_frequency_generalized_zero_crossing` | Huang et al. (2009). Averages 4 period types at each reference point. Most robust for noisy signals. |
+| TEO | `calculate_instantaneous_frequency_teo` | Teager Energy Operator. Extremely local (3 samples). Responsive to rapid changes but noise-sensitive. |
+| Hou | `calculate_instantaneous_frequency_hou` | Arccos method. No normalization needed. Works well with slowly-varying amplitude. |
+| Wu | `calculate_instantaneous_frequency_wu` | Quadrature-based derivative ratio. Requires normalized IMF. |
+
+```python
+from hhtpy import (
+    hilbert_huang_transform,
+    calculate_instantaneous_frequency_generalized_zero_crossing,
+)
+
+imfs, residue = hilbert_huang_transform(
+    signal,
+    sampling_frequency,
+    frequency_calculation_method=calculate_instantaneous_frequency_generalized_zero_crossing,
+)
+```
+
+### Frequency Despiking
+
+The quadrature method can produce spikes at IMF extrema. `despike_frequency` removes them by interpolation:
+
+```python
+from hhtpy import despike_frequency
+
+clean_freq = despike_frequency(imf_obj.instantaneous_frequency, imf_obj.signal)
+```
+
 ## Quality Diagnostics
 
 ### Index of Orthogonality
@@ -197,6 +267,23 @@ io = index_of_orthogonality(imfs)
 print(f"Index of orthogonality: {io:.4f}")  # Lower is better
 ```
 
+### Statistical Significance Test (Wu & Huang, 2004)
+
+Tests whether each IMF contains statistically significant information beyond white noise. EMD applied to white noise behaves as a dyadic filter bank where energy × period is constant. IMFs with energy outside the expected confidence interval are flagged as significant.
+
+```python
+from hhtpy import decompose, significance_test
+
+imfs, residue = decompose(signal)
+results = significance_test(imfs, alpha=0.95)
+
+for r in results:
+    status = "signal" if r.is_significant else "noise"
+    print(f"IMF {r.index}: {status} (log_energy={r.log_energy:.2f})")
+```
+
+Two test variants: `"aposteriori"` (default, uses first IMF as noise reference) and `"apriori"` (two-sided test against theoretical white noise line).
+
 ## Ensemble EMD (EEMD)
 
 Standard EMD can suffer from *mode mixing* — when oscillatory components of different scales end up in the same IMF. EEMD (Wu & Huang, 2009) mitigates this by adding white Gaussian noise over multiple trials and averaging the resulting IMFs. The noise populates the time-frequency space uniformly, guiding the sifting process to separate scales consistently.
@@ -209,6 +296,7 @@ imfs, residue = eemd(
     num_trials=100,        # Number of noise-perturbed decompositions
     noise_amplitude=0.2,   # Noise std as fraction of signal std (20%)
     seed=42,               # For reproducibility
+    n_jobs=-1,             # Parallel: -1 = all cores, None = serial
 )
 ```
 
@@ -231,6 +319,7 @@ imfs, residue = ceemdan(
     num_trials=100,        # Number of ensemble trials
     noise_amplitude=0.2,   # Noise scale factor (fraction of residue std)
     seed=42,               # For reproducibility
+    n_jobs=-1,             # Parallel: -1 = all cores, None = serial
 )
 
 # Exact reconstruction is guaranteed:
@@ -268,6 +357,57 @@ imfs, residue = memd(
 
 See `example_memd.py` for a complete example with a two-channel signal.
 
+## Masked EMD
+
+Masked EMD mitigates mode mixing by adding a known sinusoidal mask to the signal before sifting, then averaging results from multiple phase-shifted masks to cancel the mask contribution. This forces scale separation according to the mask frequency rather than relying on the signal's own structure.
+
+### Explicit Mask Parameters
+
+```python
+from hhtpy import masked_decompose
+
+imfs, residue = masked_decompose(
+    signal,
+    mask_frequency=50.0,       # Base mask frequency in Hz
+    mask_amplitude=2.0,        # Mask amplitude (absolute)
+    sampling_frequency=1000,
+    num_phase_shifts=8,        # Phase shifts to average over
+)
+```
+
+The mask frequency halves for each successive IMF: `f_j = mask_frequency / 2^j`.
+
+### Adaptive Mask Parameters
+
+Automatically estimates the mask frequency and amplitude from the signal:
+
+```python
+from hhtpy import adaptive_masked_decompose
+
+imfs, residue = adaptive_masked_decompose(
+    signal,
+    sampling_frequency=1000,
+)
+```
+
+Three initialization strategies are available:
+
+| Strategy | Function | Description |
+|----------|----------|-------------|
+| Huang (default) | `mask_init_huang` | `f_0 = max(zero-crossing freq)`, `a_0 = mean(amplitude)`. Simple and general. |
+| Deering–Kaiser | `mask_init_deering_kaiser` | Amplitude-weighted frequency centroid. Good for well-separated tones. |
+| Spectral | `mask_init_spectral` | DFT peak frequency. Robust for broadband signals. |
+
+```python
+from hhtpy import adaptive_masked_decompose, mask_init_spectral
+
+imfs, residue = adaptive_masked_decompose(
+    signal,
+    sampling_frequency=1000,
+    mask_init_method=mask_init_spectral,
+)
+```
+
 ## Mode Mixing / Separation Analysis
 
 EMD can suffer from *mode mixing* — when two frequency components end up in the same IMF instead of being separated. Whether the EMD resolves two tones or treats them as a single modulated component depends on their amplitude and frequency ratios, as analyzed by [Rilling & Flandrin (2008)](https://doi.org/10.1109/TSP.2007.906771).
@@ -291,6 +431,16 @@ See `emd_separation_analysis.py` to reproduce this analysis.
 | `eemd(signal, ...)` | Ensemble EMD — noise-assisted decomposition |
 | `ceemdan(signal, ...)` | Complete EEMD with Adaptive Noise |
 | `memd(signal, ...)` | Multivariate EMD for multi-channel signals |
+| `masked_decompose(signal, ...)` | Masked EMD with explicit mask parameters |
+| `adaptive_masked_decompose(signal, ...)` | Masked EMD with automatic parameter estimation |
+| `despike_frequency(frequency, imf)` | Remove quadrature-induced frequency spikes |
+| `significance_test(imfs, ...)` | Wu-Huang statistical significance test for IMFs |
+
+### Configuration
+
+| Class | Description |
+|-------|-------------|
+| `EnvelopeOptions(spline_method, boundary_mode)` | Configure spline interpolation and boundary handling |
 
 ### Stopping Criteria
 
@@ -307,6 +457,19 @@ See `emd_separation_analysis.py` to reproduce this analysis.
 |----------|-------------|
 | `calculate_instantaneous_frequency_quadrature` | Direct quadrature (default) |
 | `calculate_instantaneous_frequency_hilbert` | Via scipy Hilbert transform |
+| `calculate_instantaneous_frequency_zero_crossing` | Half-period zero-crossing intervals |
+| `calculate_instantaneous_frequency_generalized_zero_crossing` | GZC — averages 4 period types (Huang 2009) |
+| `calculate_instantaneous_frequency_teo` | Teager Energy Operator (3-sample) |
+| `calculate_instantaneous_frequency_hou` | Arccos method, no normalization needed |
+| `calculate_instantaneous_frequency_wu` | Quadrature-based derivative ratio |
+
+### Mask Initialization
+
+| Function | Description |
+|----------|-------------|
+| `mask_init_huang` | Max zero-crossing frequency + mean amplitude |
+| `mask_init_deering_kaiser` | Amplitude-weighted frequency centroid |
+| `mask_init_spectral` | DFT peak frequency + spectral amplitude |
 
 ### Plotting
 
@@ -314,6 +477,7 @@ See `emd_separation_analysis.py` to reproduce this analysis.
 |----------|-------------|
 | `plot_imfs(imfs, signal, residue, x_axis)` | Time-domain IMF subplots |
 | `plot_hilbert_spectrum(imfs, config)` | Time-frequency Hilbert spectrum |
+| `plot_hilbert_spectrum_contour(imfs, ...)` | Contour-style time-frequency spectrum |
 | `plot_marginal_hilbert_spectrum(imfs)` | Frequency-domain marginal spectrum |
 
 ## Acknowledgements
