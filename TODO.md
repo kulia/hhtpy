@@ -7,11 +7,11 @@ Features to implement to make hhtpy the most complete HHT library available.
 - [x] Parallelize EEMD/CEEMDAN (`concurrent.futures`, configurable `n_jobs`)
 - [x] Wu-Huang (2004) statistical significance test for IMFs
 - [x] Configurable spline methods (PChip, Akima) and boundary padding (mirror, none)
+- [x] Cycle analysis — detect cycles, characterize amplitude/frequency/duration/waveform shape, phase alignment
 
 ## Planned
 
 - [ ] Holospectrum / second-layer sift — decompose amplitude envelopes to build 3D energy distribution (carrier freq × AM freq × time)
-- [ ] Cycle analysis — detect individual oscillatory cycles, characterize amplitude/frequency/duration/waveform shape
 - [ ] Iterated mask sift — automated mask frequency refinement (cf. Quinn's `emd`)
 - [ ] VMD (Variational Mode Decomposition) — optimization-based alternative to EMD
 - [ ] Energy-based stopping criterion
@@ -33,5 +33,5 @@ No other Python library has all of these. Current landscape:
 | Wu-Huang significance test | **Yes** | No | No | No |
 | Configurable splines/padding | **Yes** | Yes | Yes | Partial |
 | Holospectrum | Planned | No | Yes | No |
-| Cycle analysis | Planned | No | Yes | No |
+| Cycle analysis | **Yes** | No | Yes | No |
 | VMD | Planned | No | No | No |

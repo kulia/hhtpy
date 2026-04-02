@@ -34,3 +34,11 @@ from .frequency_methods import (
     calculate_instantaneous_frequency_wu,
     despike_frequency,
 )
+from .cycles import (
+    Cycle,
+    detect_cycles,
+    get_cycle_vector,
+    get_cycle_stat,
+    phase_align,
+    cycle_summary_table,
+)
