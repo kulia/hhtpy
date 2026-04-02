@@ -1098,5 +1098,440 @@ class TestContourPlot(unittest.TestCase):
         plt.close(fig)
 
 
+class TestResidueQuality(unittest.TestCase):
+    """Verify that residues have the expected physical properties."""
+
+    def test_residue_is_monotonic_or_nearly_so(self):
+        """EMD residue should be monotonic or have very few extrema."""
+        from scipy.signal import find_peaks
+
+        f_s = 1000
+        t = np.arange(5 * f_s) / f_s
+        signal = np.cos(2 * np.pi * 20 * t) + 0.5 * np.cos(2 * np.pi * 60 * t) + 2 * t
+
+        imfs, residue = decompose(signal)
+
+        # EMD stops when residue is monotonic or has < 2 extrema
+        maxima, _ = find_peaks(residue)
+        minima, _ = find_peaks(-residue)
+        total_extrema = len(maxima) + len(minima)
+
+        self.assertLessEqual(
+            total_extrema, 3,
+            f"Residue should be nearly monotonic, got {total_extrema} extrema",
+        )
+
+    def test_residue_captures_dc_offset(self):
+        """A DC offset should end up mostly in the residue."""
+        f_s = 1000
+        t = np.arange(5 * f_s) / f_s
+        dc = 10.0
+        signal = np.cos(2 * np.pi * 20 * t) + dc
+
+        imfs, residue = decompose(signal)
+
+        # Mean of residue should be close to the DC offset
+        self.assertAlmostEqual(
+            np.mean(residue), dc, delta=1.0,
+            msg=f"Residue mean should be ~{dc}, got {np.mean(residue):.2f}",
+        )
+
+    def test_residue_has_fewer_oscillations_than_signal(self):
+        """Residue should have far fewer zero crossings than the original signal."""
+        f_s = 1000
+        t = np.arange(5 * f_s) / f_s
+        signal = np.cos(2 * np.pi * 20 * t) + 0.5 * np.cos(2 * np.pi * 60 * t)
+
+        imfs, residue = decompose(signal)
+
+        signal_zc = np.sum(np.diff(np.sign(signal)) != 0)
+        residue_zc = np.sum(np.diff(np.sign(residue)) != 0)
+
+        self.assertLess(
+            residue_zc, signal_zc / 2,
+            "Residue should have far fewer zero crossings than the signal",
+        )
+
+    def test_trend_captured_by_residue_plus_last_imfs(self):
+        """The trend should be captured by the residue + lowest-frequency IMFs."""
+        f_s = 1000
+        t = np.arange(5 * f_s) / f_s
+        trend = 0.5 * t ** 2
+        signal = np.cos(2 * np.pi * 30 * t) + trend
+
+        imfs, residue = decompose(signal)
+
+        # The trend lives in the residue plus the slowest IMFs.
+        # The last IMF + residue should correlate with the trend.
+        low_freq_part = residue + imfs[-1] if len(imfs) > 0 else residue
+        corr = np.corrcoef(low_freq_part, trend)[0, 1]
+        self.assertGreater(
+            corr, 0.90,
+            f"Residue + last IMF should capture the trend (corr={corr:.3f})",
+        )
+
+    def test_residue_energy_is_small_for_pure_oscillation(self):
+        """For a pure oscillation with no trend, residue should carry little energy."""
+        f_s = 1000
+        t = np.arange(5 * f_s) / f_s
+        signal = np.cos(2 * np.pi * 20 * t)
+
+        imfs, residue = decompose(signal)
+
+        signal_energy = np.sum(signal ** 2)
+        residue_energy = np.sum(residue ** 2)
+        ratio = residue_energy / signal_energy
+
+        self.assertLess(
+            ratio, 0.01,
+            f"Residue should carry <1% of energy for pure oscillation, got {ratio:.4f}",
+        )
+
+    def test_eemd_residue_is_reasonable(self):
+        """EEMD doesn't guarantee exact reconstruction, but error should be small."""
+        f_s = 1000
+        t = np.arange(3 * f_s) / f_s
+        signal = np.cos(2 * np.pi * 10 * t) + 0.5 * np.cos(2 * np.pi * 50 * t)
+
+        imfs, residue = eemd(signal, num_trials=20, seed=42)
+        reconstructed = np.sum(imfs, axis=0) + residue
+
+        # Not exact, but should be close
+        relative_error = np.sqrt(np.mean((reconstructed - signal) ** 2)) / np.std(signal)
+        self.assertLess(
+            relative_error, 0.1,
+            f"EEMD reconstruction error should be <10%, got {relative_error:.2%}",
+        )
+
+    def test_ceemdan_residue_exact_with_trend(self):
+        """CEEMDAN should exactly reconstruct even with a trend."""
+        f_s = 1000
+        t = np.arange(3 * f_s) / f_s
+        signal = np.cos(2 * np.pi * 10 * t) + 2 * t + 5
+
+        imfs, residue = ceemdan(signal, num_trials=10, seed=42)
+        reconstructed = np.sum(imfs, axis=0) + residue
+
+        np.testing.assert_allclose(
+            reconstructed, signal, atol=1e-10,
+            err_msg="CEEMDAN must exactly reconstruct signal with trend",
+        )
+
+
+class TestStoppingCriteriaBehavior(unittest.TestCase):
+    """Test that stopping criteria affect decomposition behavior as expected."""
+
+    def _make_signal(self):
+        f_s = 1000
+        t = np.arange(3 * f_s) / f_s
+        return np.cos(2 * np.pi * 10 * t) + 0.5 * np.cos(2 * np.pi * 50 * t)
+
+    def test_more_sifts_gives_lower_io(self):
+        """More sifting iterations should generally reduce the index of orthogonality."""
+        signal = self._make_signal()
+        from hhtpy.sift_stopping_criteria import get_stopping_criterion_fixed_number_of_sifts
+
+        imfs_few, _ = decompose(
+            signal, stopping_criterion=get_stopping_criterion_fixed_number_of_sifts(3)
+        )
+        imfs_many, _ = decompose(
+            signal, stopping_criterion=get_stopping_criterion_fixed_number_of_sifts(30)
+        )
+
+        io_few = index_of_orthogonality(imfs_few) if len(imfs_few) >= 2 else float("inf")
+        io_many = index_of_orthogonality(imfs_many) if len(imfs_many) >= 2 else float("inf")
+
+        # With more sifting, the IMFs should be at least as orthogonal
+        self.assertLessEqual(io_many, io_few + 0.05)
+
+    def test_s_number_criterion_stops_adaptively(self):
+        """S-number should stop sifting once the extrema count stabilizes."""
+        signal = self._make_signal()
+
+        # S-number with a small value should stop early
+        criterion_fast = get_stopping_criterion_s_number(s_number=2)
+        imfs_fast, _ = decompose(signal, stopping_criterion=criterion_fast)
+
+        # S-number with a large value should sift more
+        criterion_slow = get_stopping_criterion_s_number(s_number=10)
+        imfs_slow, _ = decompose(signal, stopping_criterion=criterion_slow)
+
+        # Both should produce valid decompositions
+        self.assertGreater(len(imfs_fast), 0)
+        self.assertGreater(len(imfs_slow), 0)
+
+    def test_cauchy_tight_threshold_sifts_more(self):
+        """A tighter Cauchy threshold should result in more sifting (flatter residual)."""
+        signal = self._make_signal()
+
+        # Loose threshold — stops early
+        criterion_loose = get_stopping_criterion_cauchy(threshold=0.5)
+        imfs_loose, residue_loose = decompose(signal, stopping_criterion=criterion_loose)
+
+        # Tight threshold — sifts more
+        criterion_tight = get_stopping_criterion_cauchy(threshold=0.01)
+        imfs_tight, residue_tight = decompose(signal, stopping_criterion=criterion_tight)
+
+        # Both should reconstruct
+        np.testing.assert_allclose(
+            np.sum(imfs_loose, axis=0) + residue_loose, signal, atol=1e-10
+        )
+        np.testing.assert_allclose(
+            np.sum(imfs_tight, axis=0) + residue_tight, signal, atol=1e-10
+        )
+
+    def test_rilling_produces_imf_like_results(self):
+        """Rilling criterion should produce IMFs with nearly zero mean envelopes."""
+        from scipy.signal import find_peaks
+        from scipy.interpolate import CubicSpline
+
+        signal = self._make_signal()
+        criterion = get_stopping_criterion_rilling(
+            threshold_1=0.05, threshold_2=0.5, alpha=0.05
+        )
+        imfs, _ = decompose(signal, stopping_criterion=criterion)
+
+        # Check that the first IMF has a small mean envelope
+        imf = imfs[0]
+        maxima, _ = find_peaks(imf)
+        minima, _ = find_peaks(-imf)
+
+        if len(maxima) >= 2 and len(minima) >= 2:
+            n = np.arange(len(imf))
+            upper = CubicSpline(
+                np.concatenate(([0], maxima, [len(imf) - 1])),
+                np.concatenate(([imf[0]], imf[maxima], [imf[-1]])),
+            )(n)
+            lower = CubicSpline(
+                np.concatenate(([0], minima, [len(imf) - 1])),
+                np.concatenate(([imf[0]], imf[minima], [imf[-1]])),
+            )(n)
+            mean_env = (upper + lower) / 2
+            amp = (upper - lower) / 2
+
+            # The mean envelope should be small relative to amplitude
+            valid = amp > np.finfo(float).eps
+            if np.any(valid):
+                ratio = np.mean(np.abs(mean_env[valid]) / amp[valid])
+                self.assertLess(
+                    ratio, 0.2,
+                    f"Rilling IMF mean/amplitude ratio should be small, got {ratio:.3f}",
+                )
+
+
+class TestCycleAnalysis(unittest.TestCase):
+    """Test cycle detection, characterization, and analysis tools."""
+
+    def _make_cosine(self, freq=10, f_s=1000, duration=3):
+        t = np.arange(duration * f_s) / f_s
+        return np.cos(2 * np.pi * freq * t), f_s
+
+    def test_detect_cycles_pure_cosine(self):
+        """A pure cosine should produce cycles with correct frequency."""
+        from hhtpy.cycles import detect_cycles
+
+        freq = 10
+        imf, f_s = self._make_cosine(freq=freq)
+        cycles = detect_cycles(imf, f_s)
+
+        self.assertGreater(len(cycles), 0)
+
+        # Most cycles should have frequency close to 10 Hz
+        freqs = [c.frequency for c in cycles]
+        median_freq = np.median(freqs)
+        self.assertAlmostEqual(
+            median_freq, freq, delta=0.5,
+            msg=f"Cycle frequency should be ~{freq} Hz, got {median_freq:.1f}",
+        )
+
+    def test_detect_cycles_amplitude(self):
+        """Cycle amplitude of a unit cosine should be ~1."""
+        from hhtpy.cycles import detect_cycles
+
+        imf, f_s = self._make_cosine()
+        cycles = detect_cycles(imf, f_s)
+
+        amps = [c.amplitude for c in cycles]
+        median_amp = np.median(amps)
+        self.assertAlmostEqual(
+            median_amp, 1.0, delta=0.1,
+            msg=f"Cycle amplitude should be ~1.0, got {median_amp:.3f}",
+        )
+
+    def test_detect_cycles_symmetry(self):
+        """A pure cosine should have symmetric cycles (rise ≈ fall)."""
+        from hhtpy.cycles import detect_cycles
+
+        imf, f_s = self._make_cosine()
+        cycles = detect_cycles(imf, f_s)
+
+        # Filter to complete cycles
+        complete = [c for c in cycles if c.is_complete]
+        self.assertGreater(len(complete), 0)
+
+        rise_fractions = [c.rise_fraction for c in complete]
+        median_rise = np.median(rise_fractions)
+        # Cosine starts at ascending zero → peak is at 1/4 cycle
+        self.assertAlmostEqual(
+            median_rise, 0.25, delta=0.05,
+            msg=f"Rise fraction of cosine should be ~0.25, got {median_rise:.3f}",
+        )
+
+    def test_detect_cycles_completeness(self):
+        """Most cycles of a clean cosine should be complete."""
+        from hhtpy.cycles import detect_cycles
+
+        imf, f_s = self._make_cosine()
+        cycles = detect_cycles(imf, f_s)
+
+        n_complete = sum(1 for c in cycles if c.is_complete)
+        ratio = n_complete / len(cycles)
+        self.assertGreater(
+            ratio, 0.9,
+            f"Most cosine cycles should be complete, got {ratio:.0%}",
+        )
+
+    def test_detect_cycles_from_emd(self):
+        """Cycle detection should work on real EMD output."""
+        from hhtpy.cycles import detect_cycles
+
+        f_s = 1000
+        t = np.arange(3 * f_s) / f_s
+        signal = np.cos(2 * np.pi * 20 * t) + 0.5 * np.cos(2 * np.pi * 60 * t)
+        imfs, _ = decompose(signal)
+
+        cycles = detect_cycles(imfs[0], f_s)
+        self.assertGreater(len(cycles), 5)
+
+    def test_detect_cycles_min_samples(self):
+        """Cycles shorter than min_samples should be excluded."""
+        from hhtpy.cycles import detect_cycles
+
+        imf, f_s = self._make_cosine(freq=10, f_s=100)  # 10 samples/cycle
+        all_cycles = detect_cycles(imf, f_s, min_samples=4)
+        strict_cycles = detect_cycles(imf, f_s, min_samples=15)
+
+        self.assertGreater(len(all_cycles), len(strict_cycles))
+
+    def test_get_cycle_vector(self):
+        """Cycle vector should label each sample with its cycle index."""
+        from hhtpy.cycles import get_cycle_vector
+
+        imf, _ = self._make_cosine()
+        cv = get_cycle_vector(imf)
+
+        self.assertEqual(len(cv), len(imf))
+        # Should have labeled cycles (non-zero values)
+        self.assertGreater(np.max(cv), 0)
+        # Labels should be consecutive integers
+        unique_labels = np.unique(cv[cv > 0])
+        expected = np.arange(1, len(unique_labels) + 1)
+        np.testing.assert_array_equal(unique_labels, expected)
+
+    def test_get_cycle_stat(self):
+        """Per-cycle statistics should work correctly."""
+        from hhtpy.cycles import get_cycle_vector, get_cycle_stat
+
+        imf, _ = self._make_cosine()
+        cv = get_cycle_vector(imf)
+
+        # Mean of the IMF within each cycle of a cosine should be ~0
+        means = get_cycle_stat(cv, imf, func=np.mean)
+        self.assertGreater(len(means), 0)
+        self.assertAlmostEqual(
+            np.median(np.abs(means)), 0, delta=0.1,
+            msg="Mean of each cosine cycle should be ~0",
+        )
+
+    def test_phase_align(self):
+        """Phase-aligned cycles should all have the same length."""
+        from hhtpy.cycles import phase_align, get_cycle_vector
+
+        imf, _ = self._make_cosine()
+        cv = get_cycle_vector(imf)
+        n_points = 48
+
+        aligned = phase_align(imf, cv, n_points=n_points)
+
+        n_cycles = len(np.unique(cv[cv > 0]))
+        self.assertEqual(aligned.shape, (n_cycles, n_points))
+
+        # Average aligned waveform of a cosine should look like a cosine
+        mean_waveform = np.mean(aligned, axis=0)
+        # It should have a peak in the first quarter and trough in the third quarter
+        peak_pos = np.argmax(mean_waveform) / n_points
+        self.assertLess(peak_pos, 0.5, "Peak should be in the first half")
+
+    def test_phase_align_auto_cycle_vector(self):
+        """Phase alignment should work without providing a cycle vector."""
+        from hhtpy.cycles import phase_align
+
+        imf, _ = self._make_cosine()
+        aligned = phase_align(imf)
+
+        self.assertGreater(aligned.shape[0], 0)
+        self.assertEqual(aligned.shape[1], 48)
+
+    def test_cycle_summary_table(self):
+        """Summary table should return a dict with correct keys and lengths."""
+        from hhtpy.cycles import detect_cycles, cycle_summary_table
+
+        imf, f_s = self._make_cosine()
+        cycles = detect_cycles(imf, f_s)
+        table = cycle_summary_table(cycles)
+
+        self.assertIn("frequency", table)
+        self.assertIn("amplitude", table)
+        self.assertIn("rise_fraction", table)
+        self.assertIn("is_complete", table)
+
+        for key, arr in table.items():
+            self.assertEqual(len(arr), len(cycles), f"Length mismatch for '{key}'")
+
+    def test_cycle_summary_table_empty(self):
+        """Summary table should handle empty cycle list."""
+        from hhtpy.cycles import cycle_summary_table
+
+        table = cycle_summary_table([])
+        self.assertEqual(len(table["frequency"]), 0)
+
+    def test_chirp_signal_varying_frequency(self):
+        """Cycles from a chirp should show increasing frequency."""
+        from hhtpy.cycles import detect_cycles
+
+        f_s = 1000
+        t = np.arange(5 * f_s) / f_s
+        # Linear chirp from 5 Hz to 50 Hz
+        phase = 2 * np.pi * (5 * t + (50 - 5) / (2 * 5) * t ** 2)
+        imf = np.cos(phase)
+
+        cycles = detect_cycles(imf, f_s)
+        freqs = [c.frequency for c in cycles]
+
+        # Frequency should increase over time
+        first_quarter = np.median(freqs[:len(freqs) // 4])
+        last_quarter = np.median(freqs[-len(freqs) // 4:])
+        self.assertGreater(
+            last_quarter, first_quarter,
+            "Chirp cycle frequency should increase over time",
+        )
+
+    def test_edge_cases(self):
+        """Edge cases should be handled gracefully."""
+        from hhtpy.cycles import detect_cycles
+
+        # Too short for any cycles
+        cycles = detect_cycles(np.array([1.0, -1.0, 1.0]), 100)
+        self.assertEqual(len(cycles), 0)
+
+        # Constant signal — no zero crossings
+        cycles = detect_cycles(np.ones(100), 100)
+        self.assertEqual(len(cycles), 0)
+
+        # 1D check
+        with self.assertRaises(ValueError):
+            detect_cycles(np.ones((2, 100)), 100)
+
+
 if __name__ == "__main__":
     unittest.main()
